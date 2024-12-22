@@ -448,9 +448,6 @@ def select_pde(mode):
         return curvature_drive_cahn_hilliard_simulation
 
 
-
-
-
 def _generate_gif(frames, gif_path):
     """
     Helper function to generate a GIF from simulation frames.

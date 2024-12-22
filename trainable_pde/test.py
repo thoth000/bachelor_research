@@ -71,15 +71,10 @@ def check_args():
 def test_predict(model, dataloader, args, device):
     model.eval()
     
-    origin_tp = torch.tensor(0.0, device=device)
-    origin_tn = torch.tensor(0.0, device=device)
-    origin_fp = torch.tensor(0.0, device=device)
-    origin_fn = torch.tensor(0.0, device=device)
-    
-    ch_tp = torch.tensor(0.0, device=device)
-    ch_tn = torch.tensor(0.0, device=device)
-    ch_fp = torch.tensor(0.0, device=device)
-    ch_fn = torch.tensor(0.0, device=device)
+    total_tp = torch.tensor(0.0, device=device)
+    total_tn = torch.tensor(0.0, device=device)
+    total_fp = torch.tensor(0.0, device=device)
+    total_fn = torch.tensor(0.0, device=device)
     
     tbar = tqdm(enumerate(dataloader), total=len(dataloader), ncols=80) if args.rank == 0 else enumerate(dataloader)
     
@@ -92,62 +87,29 @@ def test_predict(model, dataloader, args, device):
             original_size = masks.shape[2:]
             main_out_resized = F.interpolate(main_out, size=original_size, mode='bilinear', align_corners=False).cpu()
             
-            sigmoid_out = torch.sigmoid(main_out_resized) * 2 - 1
-            
-            # sigmoid_outに対してKahn-Hilliardを適用
-            sigmoid_out_np = sigmoid_out.numpy()
-            
-            # select pde
-            pde = select_pde(args.pde)
-            if args.rank == 0 and i < 2:
-                ch_out_np = pde(sigmoid_out_np, D=args.D, gamma=args.gamma, dt=args.dt, steps=args.steps, tqdm_log=True, make_gif=True, gif_path=os.path.join(args.save_dir, f'{i+1}.gif'))
-            else:
-                ch_out_np = pde(sigmoid_out_np, D=args.D, gamma=args.gamma, dt=args.dt, steps=args.steps)
-            ch_out = torch.tensor(ch_out_np)
-            
             # origin evaluation
-            preds = (sigmoid_out > args.threshold).float()
-            origin_tp += torch.sum((preds == 1) & (masks == 1)).item()
-            origin_tn += torch.sum((preds == 0) & (masks == 0)).item()
-            origin_fp += torch.sum((preds == 1) & (masks == 0)).item()
-            origin_fn += torch.sum((preds == 0) & (masks == 1)).item()
-
-            # ch evaluation
-            ch_preds = (ch_out > args.threshold).float()
-            ch_tp += torch.sum((ch_preds == 1) & (masks == 1)).item()
-            ch_tn += torch.sum((ch_preds == 0) & (masks == 0)).item()
-            ch_fp += torch.sum((ch_preds == 1) & (masks == 0)).item()
-            ch_fn += torch.sum((ch_preds == 0) & (masks == 1)).item()
+            preds = (main_out_resized > args.threshold).float()
+            total_tp += torch.sum((preds == 1) & (masks == 1)).item()
+            total_tn += torch.sum((preds == 0) & (masks == 0)).item()
+            total_fp += torch.sum((preds == 1) & (masks == 0)).item()
+            total_fn += torch.sum((preds == 0) & (masks == 1)).item()
             
             if args.rank == 0 and args.save_mask and i < 2:
-                visualize_and_save_scalar_field(sigmoid_out_np[0, 0], os.path.join(args.save_dir, f'{i+1}_origin.png'))
-                visualize_and_save_scalar_field(ch_out[0, 0], os.path.join(args.save_dir, f'{i+1}_ch.png'))
+                visualize_and_save_scalar_field(main_out_resized[0, 0], os.path.join(args.save_dir, f'{i+1}_origin.png'))
     
-    dist.all_reduce(origin_tp, op=dist.ReduceOp.SUM)
-    dist.all_reduce(origin_tn, op=dist.ReduceOp.SUM)
-    dist.all_reduce(origin_fp, op=dist.ReduceOp.SUM)
-    dist.all_reduce(origin_fn, op=dist.ReduceOp.SUM)
+    dist.all_reduce(total_tp, op=dist.ReduceOp.SUM)
+    dist.all_reduce(total_tn, op=dist.ReduceOp.SUM)
+    dist.all_reduce(total_fp, op=dist.ReduceOp.SUM)
+    dist.all_reduce(total_fn, op=dist.ReduceOp.SUM)
     
-    dist.all_reduce(ch_tp, op=dist.ReduceOp.SUM)
-    dist.all_reduce(ch_tn, op=dist.ReduceOp.SUM)
-    dist.all_reduce(ch_fp, op=dist.ReduceOp.SUM)
-    dist.all_reduce(ch_fn, op=dist.ReduceOp.SUM)
-    
-    acc = (origin_tp + origin_tn) / (origin_tp + origin_tn + origin_fp + origin_fn)
-    sen = origin_tp / (origin_tp + origin_fn) if (origin_tp + origin_fn) > 0 else torch.tensor(0.0, device=device)
-    spe = origin_tn / (origin_tn + origin_fp) if (origin_tn + origin_fp) > 0 else torch.tensor(0.0, device=device)
-    iou = origin_tp / (origin_tp + origin_fp + origin_fn) if (origin_tp + origin_fp + origin_fn) > 0 else torch.tensor(0.0, device=device)
-    miou = ((origin_tp / (origin_tp + origin_fp + origin_fn)) + (origin_tn / (origin_tn + origin_fp + origin_fn))) / 2
-    dice = (2 * origin_tp) / (2 * origin_tp + origin_fp + origin_fn) if (2 * origin_tp + origin_fp + origin_fn) > 0 else torch.tensor(0.0, device=device)
-    
-    acc_ch = (ch_tp + ch_tn) / (ch_tp + ch_tn + ch_fp + ch_fn)
-    sen_ch = ch_tp / (ch_tp + ch_fn) if (ch_tp + ch_fn) > 0 else torch.tensor(0.0, device=device)
-    spe_ch = ch_tn / (ch_tn + ch_fp) if (ch_tn + ch_fp) > 0 else torch.tensor(0.0, device=device)
-    iou_ch = ch_tp / (ch_tp + ch_fp + ch_fn) if (ch_tp + ch_fp + ch_fn) > 0 else torch.tensor(0.0, device=device)
-    miou_ch = ((ch_tp / (ch_tp + ch_fp + ch_fn)) + (ch_tn / (ch_tn + ch_fp + ch_fn))) / 2
-    dice_ch = (2 * ch_tp) / (2 * ch_tp + ch_fp + ch_fn) if (2 * ch_tp + ch_fp + ch_fn) > 0 else torch.tensor(0.0, device=device)
-    
-    return acc.item(), sen.item(), spe.item(), iou.item(), miou.item(), dice.item(), acc_ch.item(), sen_ch.item(), spe_ch.item(), iou_ch.item(), miou_ch.item(), dice_ch.item()
+    acc = (total_tp + total_tn) / (total_tp + total_tn + total_fp + total_fn)
+    sen = total_tp / (total_tp + total_fn) if (total_tp + total_fn) > 0 else torch.tensor(0.0, device=device)
+    spe = total_tn / (total_tn + total_fp) if (total_tn + total_fp) > 0 else torch.tensor(0.0, device=device)
+    iou = total_tp / (total_tp + total_fp + total_fn) if (total_tp + total_fp + total_fn) > 0 else torch.tensor(0.0, device=device)
+    miou = ((total_tp / (total_tp + total_fp + total_fn)) + (total_tn / (total_tn + total_fp + total_fn))) / 2
+    dice = (2 * total_tp) / (2 * total_tp + total_fp + total_fn) if (2 * total_tp + total_fp + total_fn) > 0 else torch.tensor(0.0, device=device)
+
+    return acc.item(), sen.item(), spe.item(), iou.item(), miou.item(), dice.item()
 
 def test(args):
     device = torch.device(f'cuda:{args.rank}')
@@ -164,9 +126,9 @@ def test(args):
     checkpoint = torch.load(args.pretrained_path, map_location=device, weights_only=False)
     model.load_state_dict(checkpoint['state_dict'])
     
-    acc, sen, spe, iou, miou, dice, acc_ch, sen_ch, spe_ch, iou_ch, miou_ch, dice_ch = test_predict(model, testloader, args, device)
+    acc, sen, spe, iou, miou, dice= test_predict(model, testloader, args, device)
     
-    return acc, sen, spe, iou, miou, dice, acc_ch, sen_ch, spe_ch, iou_ch, miou_ch, dice_ch
+    return acc, sen, spe, iou, miou, dice
 
 
 def visualize_and_save_scalar_field(scalar_field, output_path, cmap="RdBu"):
@@ -182,8 +144,8 @@ def visualize_and_save_scalar_field(scalar_field, output_path, cmap="RdBu"):
 
     # Create the figure and axis
     plt.figure(figsize=(6, 6))
-    plt.imshow(scalar_field, cmap=cmap, vmin=-1, vmax=1)
-    plt.colorbar(label="Scalar value [-1, 1]")
+    plt.imshow(scalar_field, cmap=cmap, vmin=0, vmax=1)
+    plt.colorbar(label="Scalar value [0, 1]")
 
     # Save the figure
     plt.savefig(output_path, bbox_inches='tight', pad_inches=0, dpi=300)
@@ -195,15 +157,15 @@ def main():
     args.rank = int(os.environ['RANK'])
     args.world_size = int(os.environ['WORLD_SIZE'])
     setup(args.rank, args.world_size)
-    acc, sen, spe, iou, miou, dice, acc_ch, sen_ch, spe_ch, iou_ch, miou_ch, dice_ch = test(args)
+    acc, sen, spe, iou, miou, dice = test(args)
     # args.save_dirにmetricsを保存
     with open(os.path.join(args.save_dir, 'metrics.txt'), 'w') as f:
-        f.write(f'Accuracy: {acc_ch}\n')
-        f.write(f'Sensitivity: {sen_ch}\n')
-        f.write(f'Specificity: {spe_ch}\n')
-        f.write(f'IoU: {iou_ch}\n')
-        f.write(f'MIoU: {miou_ch}\n')
-        f.write(f'Dice: {dice_ch}\n')
+        f.write(f'Accuracy: {acc}\n')
+        f.write(f'Sensitivity: {sen}\n')
+        f.write(f'Specificity: {spe}\n')
+        f.write(f'IoU: {iou}\n')
+        f.write(f'MIoU: {miou}\n')
+        f.write(f'Dice: {dice}\n')
     
     cleanup()
 

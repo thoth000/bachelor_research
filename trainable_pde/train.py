@@ -12,7 +12,7 @@ import torch.multiprocessing as mp
 
 import dataloader.drive_loader as drive
 
-from models.fr_unet import FR_UNet as Model
+from models.fr_unet import Allen_Cahn_Model as Model
 from evaluate import evaluate
 from loss import *
 
@@ -92,6 +92,9 @@ def save_args_to_file(args, filepath):
         for arg, value in vars(args).items():
             f.write(f'{arg}: {value}\n')    
 
+def fix_module_prefix(state_dict):
+    return {f"module.model.{k.removeprefix('module.')}": v for k, v in state_dict.items()}
+
 def train_one_epoch(model, dataloader, criterion, optimizer, device, world_size):
     model.train()
     train_loss = torch.tensor(0.0, device=device)  # train_lossをテンソルで初期化
@@ -138,6 +141,48 @@ def train(args, writer=None):
     model = Model(args).to(device)
     model = DDP(model, device_ids=[args.rank], find_unused_parameters=True)
 
+    if args.pretrained_path is not None: # 事前学習済みモデルがある場合、optimizerで最終層のみを更新
+        # モデル状態を取得
+        current_state_dict = model.state_dict()
+        
+        pretrained_state_dict = torch.load(args.pretrained_path, weights_only=False)['state_dict']
+        
+        pretrained_state_dict = fix_module_prefix(pretrained_state_dict)
+        
+        # フィルタリングして、一致する層だけを更新
+        # 一致する層だけを更新する辞書
+        filtered_state_dict = {
+            k: v for k, v in pretrained_state_dict.items()
+            if k in current_state_dict and v.size() == current_state_dict[k].size()
+        }
+
+        # 一致しない層を格納するリスト
+        delse_layers = [k for k in current_state_dict if k not in filtered_state_dict]
+        
+        # print(f"Matched keys: {len(filtered_state_dict.keys())}, Unmatched keys: {len(delse_layers)}")
+        
+        # 事前学習済みモデルを用いて一致層を更新
+        current_state_dict.update(filtered_state_dict)
+        model.load_state_dict(current_state_dict)
+        
+        if args.fix_pretrained_params: # 訓練済みモデルのパラメータを固定
+            # 全てのパラメータを固定 (requires_grad=False)
+            for param in model.parameters():
+                param.requires_grad = False
+        
+            # DELSEのみのパラメータを学習可能に (requires_grad=True)
+            for name, param in model.named_parameters():
+                if name in delse_layers:
+                    param.requires_grad = True
+            delse_params = filter(lambda p: p.requires_grad, model.parameters())
+        
+            # optimizerの設定
+            optimizer = optim.Adam(delse_params, lr=args.lr, weight_decay=args.weight_decay)
+        else: # 訓練済みモデルのパラメータを固定しない
+            optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    else:
+        optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    
     # ロス関数、オプティマイザ、スケジューラ設定
     if args.criterion == 'Dice':
         criterion = DiceLoss()
@@ -148,7 +193,7 @@ def train(args, writer=None):
     elif args.criterion == 'BalancedBCE':
         criterion = BalancedBinaryCrossEntropyLoss()
     else:
-        criterion = torch.nn.BCEWithLogitsLoss()
+        criterion = BCELoss()
     
     optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     

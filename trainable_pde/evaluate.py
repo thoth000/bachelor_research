@@ -38,10 +38,9 @@ def evaluate(model, dataloader, criterion, epoch, args, device):
             main_out_resized = F.interpolate(main_out, size=mask_size, mode='bilinear')
             if args.save_mask or epoch == args.max_epoch - 1:
                 save_main_out_image(main_out_resized, os.path.join(out_dir, f"{i}.png"))
-            
-            preds = torch.sigmoid(main_out_resized)
-            # クラスに不均衡があり、1が少ないので閾値を0.5より低めに設定する
-            preds = (preds > args.threshold).float()
+
+            # モデル出力が確率場解釈なので閾値で直接バイナリ化
+            preds = (main_out_resized > args.threshold).float()
             # 元画像サイズにする
             preds = unpad_to_original(preds, sample["padding"])
             masks = unpad_to_original(masks, sample["padding"])

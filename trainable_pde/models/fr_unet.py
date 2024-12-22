@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from .utils import InitWeights_He
 
 
@@ -151,6 +152,7 @@ class FR_UNet(nn.Module):
             filters[2]*3, filters[2],  dp=dropout, is_up=True, is_down=False, fuse=fuse)
         self.block40 = block(filters[3], filters[3],
                              dp=dropout, is_up=True, is_down=False, fuse=fuse)
+        
         self.final1 = nn.Conv2d(
             filters[0], num_classes, kernel_size=1, padding=0, bias=True)
         self.final2 = nn.Conv2d(
@@ -184,7 +186,7 @@ class FR_UNet(nn.Module):
         x12 = self.block12(torch.cat([x11, x_up21], dim=1))
         _, x_up22 = self.block22(torch.cat([x_down11, x21, x_up31], dim=1))
         x13 = self.block13(torch.cat([x12, x_up22], dim=1))
-        output = (self.final1(x1_1)+self.final2(x10)+self.final3(x11)+self.final4(x12)+self.final5(x13))/5
+        output = (self.final1(x1_1)+self.final2(x10)+self.final3(x11)+self.final4(x12)+self.final5(x13)) / 5
         #if self.out_ave == True:
         #    output = (self.final1(x1_1)+self.final2(x10) +
         #              self.final3(x11)+self.final4(x12)+self.final5(x13))/5
@@ -192,3 +194,48 @@ class FR_UNet(nn.Module):
         #    output = self.final5(x13)
 
         return output
+
+class Allen_Cahn_Model(nn.Module):
+    def __init__(self, args):
+        super(Allen_Cahn_Model, self).__init__()
+        self.model = FR_UNet(args)
+        # pde parameters
+        self.gamma = nn.Parameter(torch.tensor(1.0))
+        self.M = args.M # 移動度
+        self.dt = args.dt # 時間刻み
+        self.steps = args.steps # ステップ数
+    
+    def gradient(self, u):
+        # ノイマン境界条件下での勾配計算
+        # u (torch.Tensor): (B, C, H, W)
+        u_pad = F.pad(u, (1, 1, 1, 1), mode='replicate')
+        dx = (u_pad[..., 2:, 1:-1] - u_pad[..., :-2, 1:-1]) / 2
+        dy = (u_pad[..., 1:-1, 2:] - u_pad[..., 1:-1, :-2]) / 2
+        return dx, dy
+    
+    def divergence(self, dx, dy):
+        # ノイマン境界条件下での発散計算
+        # dx, dy (torch.Tensor): (B, C, H, W)
+        dx_pad = F.pad(dx, (1, 1, 1, 1), mode='replicate')
+        dy_pad = F.pad(dy, (1, 1, 1, 1), mode='replicate')
+        ddx = (dx_pad[..., 2:, 1:-1] - dx_pad[..., :-2, 1:-1]) / 2
+        ddy = (dy_pad[..., 1:-1, 2:] - dy_pad[..., 1:-1, :-2]) / 2
+        return ddx + ddy
+    
+    def allen_cahn(self, u):
+        # Allen-Cahn方程式の計算
+        # u (torch.Tensor): (B, C, H, W)
+        # du = M * {div(gamma * grad(u)) - u(1-u)(2u-1)}
+        dx, dy = self.gradient(u)
+        laplacian = self.divergence(self.gamma * dx, self.gamma * dy)
+        return self.M * (laplacian - (u*(1-u)*(2*u-1)))
+        
+    def forward(self, x):
+        x = self.model(x)
+        x = torch.sigmoid(x)
+        # Allen-Cahn equation
+        for _ in range(self.steps):
+            x = x + self.dt * self.allen_cahn(x)
+            # 相分離モデル化のために[0, 1]にクリッピング
+            x = torch.clamp(x, 0, 1)
+        return x

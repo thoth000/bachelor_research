@@ -5,7 +5,7 @@ class BalancedBinaryCrossEntropyLoss(torch.nn.Module):
     def __init__(self):
         super(BalancedBinaryCrossEntropyLoss, self).__init__()
 
-    def forward(self, logits, targets):
+    def forward(self, preds, targets):
         # 正例と負例の数を計算
         num_positive = torch.sum(targets)
         num_negative = targets.numel() - num_positive
@@ -14,18 +14,23 @@ class BalancedBinaryCrossEntropyLoss(torch.nn.Module):
         pos_weight = num_negative / (num_positive + 1e-6)  # 正例の重要度を調整
 
         # Binary Cross Entropy with logits and pos_weight
-        loss = F.binary_cross_entropy_with_logits(
-            logits, targets,
+        loss = F.binary_cross_entropy(
+            preds, targets,
             pos_weight=pos_weight,  # 正例の重みを指定
             reduction='mean'
         )
         
         return loss
 
+
+class BCELoss(torch.nn.Module):
+    def forward(self, preds, targets):
+        return F.binary_cross_entropy(preds, targets)
+
+
 class DiceLoss(torch.nn.Module):
     def forward(self, preds, targets):
         smooth = 1e-6
-        preds = torch.sigmoid(preds)
         intersection = (preds * targets).sum()
         return 1 - (2. * intersection + smooth) / (preds.sum() + targets.sum() + smooth)
     
@@ -36,7 +41,6 @@ class FocalLoss(torch.nn.Module):
         self.gamma = gamma
 
     def forward(self, preds, targets):
-        preds = torch.sigmoid(preds)
         bce_loss = F.binary_cross_entropy(preds, targets, reduction='none')
         pt = torch.exp(-bce_loss)
         focal_loss = self.alpha * (1 - pt) ** self.gamma * bce_loss
@@ -50,7 +54,6 @@ class TverskyLoss(torch.nn.Module):
         self.beta = beta
 
     def forward(self, preds, targets):
-        preds = torch.sigmoid(preds)
         smooth = 1e-6
         tp = (preds * targets).sum()
         fn = ((1 - preds) * targets).sum()
