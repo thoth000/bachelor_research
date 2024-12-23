@@ -67,7 +67,7 @@ def check_args():
     
     # pdeのパラメータ
     parser.add_argument('--M', type=float, default=0.1)
-    parser.add_argument('--dt', type=float, default=5.0)
+    parser.add_argument('--dt', type=float, default=0.1)
     parser.add_argument('--steps', type=int, default=100)
     
     # datasetのパス

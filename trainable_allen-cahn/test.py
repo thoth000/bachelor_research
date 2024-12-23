@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt
 from tqdm import tqdm
 import torch.distributed as dist
 from torch.utils.data import DataLoader, DistributedSampler
-from models.fr_unet import FR_UNet as Model
+from models.fr_unet import Allen_Cahn_Model as Model
 from models.lse import select_pde
 import dataloader.drive_loader as drive
 

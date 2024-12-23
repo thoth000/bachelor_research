@@ -235,7 +235,16 @@ class Allen_Cahn_Model(nn.Module):
         x = torch.sigmoid(x)
         # Allen-Cahn equation
         for _ in range(self.steps):
-            x = x + self.dt * self.allen_cahn(x)
+            # Euler method
+            #x = x + self.dt * self.allen_cahn(x)
+            
+            # Runge-Kutta method 4th order
+            k1 = self.allen_cahn(x)
+            k2 = self.allen_cahn(x + self.dt/2 * k1)
+            k3 = self.allen_cahn(x + self.dt/2 * k2)
+            k4 = self.allen_cahn(x + self.dt * k3)
+            x = x + self.dt/6 * (k1 + 2*k2 + 2*k3 + k4)
+            
             # 相分離モデル化のために[0, 1]にクリッピング
             x = torch.clamp(x, 0, 1)
         return x

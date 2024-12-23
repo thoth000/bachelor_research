@@ -3,3 +3,6 @@ result/
 
 # pthファイルを無視
 *.pth
+
+# pycacheファイルを無視
+__pycache__/
