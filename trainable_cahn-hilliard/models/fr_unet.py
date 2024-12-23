@@ -195,12 +195,12 @@ class FR_UNet(nn.Module):
 
         return output
 
-class Allen_Cahn_Model(nn.Module):
+class Cahn_Hilliard_Model(nn.Module):
     def __init__(self, args):
-        super(Allen_Cahn_Model, self).__init__()
+        super(Cahn_Hilliard_Model, self).__init__()
         self.model = FR_UNet(args)
         # pde parameters
-        self.gamma_row = nn.Parameter(torch.tensor(1.0))
+        self.gamma = nn.Parameter(torch.tensor(1.0))
         self.M = args.M # 移動度
         self.dt = args.dt # 時間刻み
         self.steps = args.steps # ステップ数
@@ -222,14 +222,14 @@ class Allen_Cahn_Model(nn.Module):
         ddy = (dy_pad[..., 1:-1, 2:] - dy_pad[..., 1:-1, :-2]) / 2
         return ddx + ddy
     
-    def allen_cahn(self, u):
-        # Allen-Cahn方程式の計算
+    def cahn_hilliard(self, u):
+        # Cahn-Hilliard方程式の計算
         # u (torch.Tensor): (B, C, H, W)
-        # du = M * {div(gamma * grad(u)) - u(1-u)(2u-1)}
+        # du = M * div{grad(-gamma * div(u) + (u*(1-u)*(2*u-1))}
         dx, dy = self.gradient(u)
-        gamma = torch.exp(self.gamma_row) # expで正の値を保証
-        laplacian = self.divergence(gamma * dx, gamma * dy)
-        return self.M * (laplacian - (u*(1-u)*(2*u-1)))
+        laplacian = self.divergence(dx, dy)
+        mu = -self.gamma * laplacian + (u*(1-u)*(2*u-1))
+        return self.M * self.divergence(*self.gradient(mu))
         
     def forward(self, x):
         x = self.model(x)
@@ -237,13 +237,13 @@ class Allen_Cahn_Model(nn.Module):
         # Allen-Cahn equation
         for _ in range(self.steps):
             # Euler method
-            #x = x + self.dt * self.allen_cahn(x)
+            #x = x + self.dt * self.cahn_hilliard(x)
             
             # Runge-Kutta method 4th order
-            k1 = self.allen_cahn(x)
-            k2 = self.allen_cahn(x + self.dt/2 * k1)
-            k3 = self.allen_cahn(x + self.dt/2 * k2)
-            k4 = self.allen_cahn(x + self.dt * k3)
+            k1 = self.cahn_hilliard(x)
+            k2 = self.cahn_hilliard(x + self.dt/2 * k1)
+            k3 = self.cahn_hilliard(x + self.dt/2 * k2)
+            k4 = self.cahn_hilliard(x + self.dt * k3)
             x = x + self.dt/6 * (k1 + 2*k2 + 2*k3 + k4)
             
             # 相分離モデル化のために[0, 1]にクリッピング

@@ -34,7 +34,7 @@ DATASET="drive"
 TRANSFORM="fr_unet"
 DATASET_PATH="/home/sano/dataset/DRIVE"
 DATASET_OPT="560"
-PRETRAINED_PATH="/home/sano/documents/trainable_allen-cahn/models/checkpoint-epoch40.pth"
+PRETRAINED_PATH="/home/sano/documents/trainable_cahn-hilliard/models/checkpoint-epoch40.pth"
 
 # PyTorch DDPでトレーニングを実行
 torchrun --nproc_per_node=$NUM_GPUS --nnodes=1 --node_rank=0 --master_port=$MASTER_PORT main.py \
