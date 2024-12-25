@@ -221,6 +221,7 @@ def train(args, writer=None):
         
         if args.rank == 0:
             writer.add_scalar('Loss/train', train_loss, epoch)
+            writer.add_scalar('gamma', torch.exp(model.module.gamma_row), epoch)
         
         if epoch % args.val_interval == args.val_interval - 1:
             val_loss, acc, sen, spe, iou, miou, dice = evaluate(model, valloader, criterion, epoch, args, device)
