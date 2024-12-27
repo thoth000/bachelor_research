@@ -152,7 +152,7 @@ class DRIVEDataset(Dataset):
         self.data_file = os.listdir(self.data_path)
         self.image_file = self._select_img(self.data_file)
         if split is not None and mode == "training":
-            assert split > 0 and split < 1
+            # assert split > 0 and split < 1
             if not is_val:
                 self.image_file = self.image_file[:int(split*len(self.image_file))]
             else:

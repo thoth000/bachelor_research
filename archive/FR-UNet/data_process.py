@@ -113,10 +113,16 @@ def data_process(data_path, name, patch_size, stride, mode):
                 gt_list.append(ToTensor()(gt))
     img_list = normalization(img_list)
     if mode == "training":
-        img_patch = get_patch(img_list, patch_size, stride)
-        gt_patch = get_patch(gt_list, patch_size, stride)
-        save_patch(img_patch, save_path, "img_patch", name)
-        save_patch(gt_patch, save_path, "gt_patch", name)
+        # img_patch = get_patch(img_list, patch_size, stride)
+        # gt_patch = get_patch(gt_list, patch_size, stride)
+        # save_patch(img_patch, save_path, "img_patch", name)
+        # save_patch(gt_patch, save_path, "gt_patch", name)
+        
+        img_list = get_square(img_list, name)
+        gt_list = get_square(gt_list, name)
+        save_each_image(img_list, save_path, "img", name)
+        save_each_image(gt_list, save_path, "gt", name)
+    
     elif mode == "test":
         if name != "CHUAC":
             img_list = get_square(img_list, name)

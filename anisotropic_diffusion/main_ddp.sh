@@ -17,17 +17,17 @@ NUM_GPUS=$(echo $CUDA_VISIBLE_DEVICES | awk -F',' '{print NF}')
 MODEL_NAME="fr_unet"
 
 # トレーニング用引数の指定
-MAX_EPOCH=200
-BATCH_SIZE=2
+MAX_EPOCH=300
+BATCH_SIZE=1
 RESOLUTION=768
-LEARNING_RATE=1e-2
+LEARNING_RATE=4e-3
 ETA_MIN=0
 WEIGHT_DECAY=1e-5
 CRITERION="Dice"
 SCHEDULER="cosine_annealing"
 EXP_DIR="exp"
 EXP_NAME="exp_$(date +"%Y%m%d_%H%M%S")"  # exp_nameをタイムスタンプに基づいて設定
-VAL_INTERVAL=5
+VAL_INTERVAL=10
 THRESHOLD=0.5
 NUM_WORKERS=4
 DATASET="drive"
