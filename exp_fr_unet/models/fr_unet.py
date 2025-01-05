@@ -1,6 +1,5 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from .utils import InitWeights_He
 
 
@@ -152,7 +151,6 @@ class FR_UNet(nn.Module):
             filters[2]*3, filters[2],  dp=dropout, is_up=True, is_down=False, fuse=fuse)
         self.block40 = block(filters[3], filters[3],
                              dp=dropout, is_up=True, is_down=False, fuse=fuse)
-        
         self.final1 = nn.Conv2d(
             filters[0], num_classes, kernel_size=1, padding=0, bias=True)
         self.final2 = nn.Conv2d(
@@ -165,41 +163,6 @@ class FR_UNet(nn.Module):
             filters[0], num_classes, kernel_size=1, padding=0, bias=True)
         self.fuse = nn.Conv2d(
             5, num_classes, kernel_size=1, padding=0, bias=True)
-        
-        # 主方向拡散係数層
-        self.s_long1 = nn.Conv2d(
-            filters[0], num_classes, kernel_size=1, padding=0, bias=True)
-        self.s_long2 = nn.Conv2d(
-            filters[0], num_classes, kernel_size=1, padding=0, bias=True)
-        self.s_long3 = nn.Conv2d(
-            filters[0], num_classes, kernel_size=1, padding=0, bias=True)
-        self.s_long4 = nn.Conv2d(
-            filters[0], num_classes, kernel_size=1, padding=0, bias=True)
-        self.s_long5 = nn.Conv2d(
-            filters[0], num_classes, kernel_size=1, padding=0, bias=True)
-        
-        self.s_short1 = nn.Conv2d(
-            filters[0], num_classes, kernel_size=1, padding=0, bias=True)
-        self.s_short2 = nn.Conv2d(
-            filters[0], num_classes, kernel_size=1, padding=0, bias=True)
-        self.s_short3 = nn.Conv2d(
-            filters[0], num_classes, kernel_size=1, padding=0, bias=True)
-        self.s_short4 = nn.Conv2d(
-            filters[0], num_classes, kernel_size=1, padding=0, bias=True)
-        self.s_short5 = nn.Conv2d(
-            filters[0], num_classes, kernel_size=1, padding=0, bias=True)
-        
-        self.vec1 = nn.Conv2d(
-            filters[0], num_classes*2, kernel_size=1, padding=0, bias=True)
-        self.vec2 = nn.Conv2d(
-            filters[0], num_classes*2, kernel_size=1, padding=0, bias=True)
-        self.vec3 = nn.Conv2d(
-            filters[0], num_classes*2, kernel_size=1, padding=0, bias=True)
-        self.vec4 = nn.Conv2d(
-            filters[0], num_classes*2, kernel_size=1, padding=0, bias=True)
-        self.vec5 = nn.Conv2d(
-            filters[0], num_classes*2, kernel_size=1, padding=0, bias=True)
-        
         self.apply(InitWeights_He)
 
     def forward(self, x):
@@ -221,82 +184,11 @@ class FR_UNet(nn.Module):
         x12 = self.block12(torch.cat([x11, x_up21], dim=1))
         _, x_up22 = self.block22(torch.cat([x_down11, x21, x_up31], dim=1))
         x13 = self.block13(torch.cat([x12, x_up22], dim=1))
-        output = (self.final1(x1_1)+self.final2(x10)+self.final3(x11)+self.final4(x12)+self.final5(x13)) / 5
-        # 長手方向拡散係数層
-        s_long = (self.s_long1(x1_1)+self.s_long2(x10)+self.s_long3(x11)+self.s_long4(x12)+self.s_long5(x13)) / 5
-        # 短手方向拡散係数層
-        s_short = (self.s_short1(x1_1)+self.s_short2(x10)+self.s_short3(x11)+self.s_short4(x12)+self.s_short5(x13)) / 5
-        # 主方向層
-        vec = (self.vec1(x1_1)+self.vec2(x10)+self.vec3(x11)+self.vec4(x12)+self.vec5(x13)) / 5
+        output = (self.final1(x1_1)+self.final2(x10)+self.final3(x11)+self.final4(x12)+self.final5(x13))/5
+        #if self.out_ave == True:
+        #    output = (self.final1(x1_1)+self.final2(x10) +
+        #              self.final3(x11)+self.final4(x12)+self.final5(x13))/5
+        #else:
+        #    output = self.final5(x13)
 
-        # 指数関数化
-        s_long_exp = torch.exp(s_long)
-        s_short_exp = torch.exp(s_short)
-        
-        return output, s_long_exp, s_short_exp, vec
-
-class Anisotropic_Diffusion(nn.Module):
-    def __init__(self, args):
-        super(Anisotropic_Diffusion, self).__init__()
-        self.model = FR_UNet(args)
-        # pde parameters
-        self.M = args.M # 移動度
-        self.dt = args.dt # 時間刻み
-        self.steps = args.steps # ステップ数
-    
-    def gradient(self, u):
-        # ノイマン境界条件下での勾配計算
-        # u (torch.Tensor): (B, C, H, W)
-        u_pad = F.pad(u, (1, 1, 1, 1), mode='replicate')
-        dx = (u_pad[..., 2:, 1:-1] - u_pad[..., :-2, 1:-1]) / 2
-        dy = (u_pad[..., 1:-1, 2:] - u_pad[..., 1:-1, :-2]) / 2
-        return dx, dy
-    
-    def divergence(self, dx, dy):
-        # ノイマン境界条件下での発散計算
-        # dx, dy (torch.Tensor): (B, C, H, W)
-        dx_pad = F.pad(dx, (1, 1, 1, 1), mode='replicate')
-        dy_pad = F.pad(dy, (1, 1, 1, 1), mode='replicate')
-        ddx = (dx_pad[..., 2:, 1:-1] - dx_pad[..., :-2, 1:-1]) / 2
-        ddy = (dy_pad[..., 1:-1, 2:] - dy_pad[..., 1:-1, :-2]) / 2
-        return ddx + ddy
-    
-    def diffusion_matrix(self, s_long, s_short, v_long):
-        # 長手方向の拡散
-        D_long = s_long * (v_long.unsqueeze(2) * v_long.unsqueeze(1))
-        # 短手方向の拡散
-        I = torch.eye(2, device=v_long.device).view(1, 2, 2, 1, 1)  # 単位行列
-        D_short = s_short * (I - v_long.unsqueeze(2) * v_long.unsqueeze(1))
-        return D_long + D_short
-    
-    def allen_cahn(self, u, s_long, s_short, v_long):
-        # Allen-Cahn方程式の計算
-        # u (torch.Tensor): (B, C, H, W)
-        # du = M * {div(gamma * grad(u)) - u(1-u)(2u-1)}
-        dx, dy = self.gradient(u)
-        D = self.diffusion_matrix(s_long, s_short, v_long)
-        grad = torch.stack([dx, dy], dim=1) # (B, 2, H, W)
-        flux = torch.einsum('bijhw,bjkhw->bikhw', D, grad) # (B, 2, H, W)
-        div = self.divergence(flux[:, 0], flux[:, 1]) # (B, H, W)
-        return self.M * (div - (u*(1-u)*(2*u-1)))
-        
-    def forward(self, x):
-        output, s_long, s_short, v_long = self.model(x)
-        # v (B, 2, H, W)を正規化
-        v_long = F.normalize(v_long + 1e-6, p=2, dim=1) # (B, 2, H, W)
-        x = torch.sigmoid(output)
-        # Allen-Cahn equation
-        for _ in range(self.steps):
-            # Euler method
-            #x = x + self.dt * self.allen_cahn(x)
-            
-            # Runge-Kutta method 4th order
-            k1 = self.allen_cahn(x, s_long, s_short, v_long)
-            k2 = self.allen_cahn(x + self.dt/2 * k1, s_long, s_short, v_long)
-            k3 = self.allen_cahn(x + self.dt/2 * k2, s_long, s_short, v_long)
-            k4 = self.allen_cahn(x + self.dt * k3, s_long, s_short, v_long)
-            x = x + self.dt/6 * (k1 + 2*k2 + 2*k3 + k4)
-            
-        # 相分離モデル化のために[0, 1]にクリッピング
-        x = torch.clamp(x, 0, 1)
-        return x, s_long, s_short, v_long
+        return output

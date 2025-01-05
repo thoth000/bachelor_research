@@ -8,6 +8,8 @@ import matplotlib.pyplot as plt
 
 from dataloader.drive_loader import unpad_to_original
 
+from loss import *
+
 # loss, accuracy, IoU, Dice
 def evaluate(model, dataloader, criterion, epoch, args, device):
     model.eval()
@@ -17,6 +19,12 @@ def evaluate(model, dataloader, criterion, epoch, args, device):
     total_tn = torch.tensor(0.0, device=device)
     total_fp = torch.tensor(0.0, device=device)
     total_fn = torch.tensor(0.0, device=device)
+    
+    # for centerline
+    center_tp = torch.tensor(0.0, device=device)
+    center_tn = torch.tensor(0.0, device=device)
+    center_fp = torch.tensor(0.0, device=device)
+    center_fn = torch.tensor(0.0, device=device)
     
     if args.save_mask or epoch == args.max_epoch - 1:
         # ディレクトリ生成
@@ -29,7 +37,14 @@ def evaluate(model, dataloader, criterion, epoch, args, device):
             targets = sample['transformed_mask'].to(device)
             
             main_out, s_long, s_short, v_long = model(images)
-            loss = criterion(main_out, targets)
+            # 個別の損失を計算
+            loss_mask = BCELoss()(main_out, sample['transformed_mask'].to(device))
+            loss_center = BCELoss()(main_out, sample['skeleton'].to(device))
+            loss_cosine = CosineLoss()(v_long, sample['vessel_directions'].to(device))
+            loss_anisotropic = AnisotropicLoss()(s_long, s_short, sample['transformed_mask'].to(device)) 
+            
+            loss = args.lambda_mask * loss_mask + args.lambda_center * loss_center + args.lambda_cosine * loss_cosine + args.lambda_anisotropic * loss_anisotropic
+            
             running_loss += loss * images.size(0) # バッチ内のサンプル数で加重
             total_samples += images.size(0)  # バッチ内のサンプル数を加算
             
@@ -44,7 +59,6 @@ def evaluate(model, dataloader, criterion, epoch, args, device):
                 save_main_out_image(s_short, os.path.join(out_dir, f"{i}_lambda_short.png"))
                 visualize_vector_field_with_image(v_long, images, os.path.join(out_dir, f"{i}_v_long.png"), step=10, scale=0.1)
                 
-
             # モデル出力が確率場解釈なので閾値で直接バイナリ化
             preds = (main_out_resized > args.threshold).float()
             # 元画像サイズにする
@@ -56,7 +70,13 @@ def evaluate(model, dataloader, criterion, epoch, args, device):
             total_tn += torch.sum((preds == 0) & (masks == 0)).item()
             total_fp += torch.sum((preds == 1) & (masks == 0)).item()
             total_fn += torch.sum((preds == 0) & (masks == 1)).item()
-    
+            
+            # centerline
+            center_tp += torch.sum((preds == 1) & (sample['skeleton'].to(device) == 1)).item()
+            center_tn += torch.sum((preds == 0) & (sample['skeleton'].to(device) == 0)).item()
+            center_fp += torch.sum((preds == 1) & (sample['skeleton'].to(device) == 0)).item()
+            center_fn += torch.sum((preds == 0) & (sample['skeleton'].to(device) == 1)).item()
+            
     # 集計
     dist.all_reduce(running_loss, op=dist.ReduceOp.SUM)
     dist.all_reduce(total_samples, op=dist.ReduceOp.SUM)
@@ -64,6 +84,11 @@ def evaluate(model, dataloader, criterion, epoch, args, device):
     dist.all_reduce(total_tn, op=dist.ReduceOp.SUM)
     dist.all_reduce(total_fp, op=dist.ReduceOp.SUM)
     dist.all_reduce(total_fn, op=dist.ReduceOp.SUM)
+    
+    dist.all_reduce(center_tp, op=dist.ReduceOp.SUM)
+    dist.all_reduce(center_tn, op=dist.ReduceOp.SUM)
+    dist.all_reduce(center_fp, op=dist.ReduceOp.SUM)
+    dist.all_reduce(center_fn, op=dist.ReduceOp.SUM)
     
     avg_loss = running_loss / total_samples
     acc = (total_tp + total_tn) / (total_tp + total_tn + total_fp + total_fn)
@@ -73,7 +98,9 @@ def evaluate(model, dataloader, criterion, epoch, args, device):
     miou = ((total_tp / (total_tp + total_fp + total_fn)) + (total_tn / (total_tn + total_fp + total_fn))) / 2
     dice = (2 * total_tp) / (2 * total_tp + total_fp + total_fn) # F1
     
-    return avg_loss.item(), acc.item(), sen.item(), spe.item(), iou.item(), miou.item(), dice.item()
+    
+    
+    return avg_loss.item(), acc.item(), sen.item(), spe.item(), iou.item(), miou.item(), dice.item(), dice_center.item()
 
 
 def save_main_out_image(output_tensor, filepath, cmap="viridis"):
@@ -134,3 +161,44 @@ def visualize_vector_field_with_image(vector_field, image, file_path, step=10, s
     plt.gca().invert_yaxis()  # 画像のy軸方向と一致させる
     plt.savefig(file_path)
     plt.close()
+
+
+def minpool(input, kernel_size=3, stride=1, padding=1):
+    """
+    最小プーリング
+    Args:
+        input (torch.Tensor): 入力テンソル (N, C, H, W)
+        kernel_size (int): カーネルサイズ
+        stride (int): ストライド
+        padding (int): パディング
+    Returns:
+        torch.Tensor: 出力テンソル (N, C, H, W)
+    """
+    inverted_input = 1 - input # 入力を反転
+    return 1 - F.max_pool2d(inverted_input, kernel_size, stride, padding) # 最大プーリングを適用して再度反転
+
+
+def soft_skeleton(mask, k=30):
+    """
+    ソフトスケルトン変換
+    Args:
+        mask (torch.Tensor): マスク画像 (N, 1, H, W)
+        k (int): 最大管幅
+    Returns:
+        torch.Tensor: ソフトスケルトン画像 (N, 1, H, W)
+    """
+    # Initialize I' as maxpool(minpool(mask))
+    I_prime = F.max_pool2d(minpool(mask, kernel_size=3, stride=1, padding=1), kernel_size=3, stride=1, padding=1)
+    # Initialize S as ReLU(I - I')
+    S = F.relu(mask - I_prime)
+
+    # Iterative refinement of the skeleton
+    for _ in range(k):
+        # Update I
+        mask = minpool(mask, kernel_size=3, stride=1, padding=1)
+        # Update I'
+        I_prime = F.max_pool2d(minpool(mask, kernel_size=3, stride=1, padding=1), kernel_size=3, stride=1, padding=1)
+        # Update S
+        S = S + (1 - S) * F.relu(mask - I_prime)
+
+    return S

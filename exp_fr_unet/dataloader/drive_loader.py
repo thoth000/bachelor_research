@@ -11,8 +11,6 @@ import cv2
 from PIL import Image
 import numpy as np
 import random
-from skimage.morphology import skeletonize
-from sklearn.decomposition import PCA
 
 import albumentations as A
 
@@ -117,99 +115,13 @@ class Keep:
         return sample
 
 
-class Skeletonize:
-    """マスクをスケルトン化するクラス"""
-    def __call__(self, sample):
-        mask = sample['mask'].squeeze()  # マスクを取得して次元を整える
-        skeleton = self.skeletonize_mask(mask)
-        sample['skeleton'] = skeleton
-        return sample
-
-    @staticmethod
-    def skeletonize_mask(mask):
-        """
-        スケルトン化を行う関数
-        Args:
-            mask (numpy.ndarray): 入力マスク (H, W) バイナリマスク
-        Returns:
-            skeleton (numpy.ndarray): スケルトン (H, W) バイナリマスク
-        """
-        binary_mask = (mask > 0).astype(np.float16)  # バイナリマスクに変換
-        return skeletonize(binary_mask)
-
-
-class CalculateSkeletonDirections:
-    """スケルトン上の方向ベクトルを計算するクラス"""
-    def __call__(self, sample):
-        skeleton = sample.get('skeleton', None)
-        mask = sample['mask'].squeeze()
-        
-        if skeleton is not None:
-            skeleton_directions = self.calculate_skeleton_directions_with_central_difference(skeleton)
-            vessel_directions = self.find_nearest_skeleton_directions(mask, skeleton, skeleton_directions)
-            
-            sample['skeleton_directions'] = skeleton_directions
-            sample['vessel_directions'] = vessel_directions
-        
-        return sample
-
-    @staticmethod
-    def calculate_skeleton_directions_with_central_difference(skeleton):
-        """
-        スケルトン上の方向ベクトルを中心差分法で計算。
-        Args:
-            skeleton (numpy.ndarray): スケルトン (H, W) バイナリマスク
-        Returns:
-            directions (numpy.ndarray): スケルトン点ごとの方向ベクトル (H, W, 2)
-        """
-        H, W = skeleton.shape
-        directions = np.zeros((H, W, 2))
-        skeleton = skeleton.astype(np.int8)
-
-        x, y = np.nonzero(skeleton)
-
-        for xi, yi in zip(x, y):
-            dx = skeleton[max(xi-1, 0):min(xi+2, H), yi] - skeleton[max(xi-2, 0):min(xi+1, H), yi]
-            dy = skeleton[xi, max(yi-1, 0):min(yi+2, W)] - skeleton[xi, max(yi-2, 0):min(yi+1, W)]
-            direction = np.array([np.sum(dx), np.sum(dy)])
-            if np.linalg.norm(direction) > 0:
-                direction = direction / np.linalg.norm(direction)
-                if direction[0] < 0:
-                    directions[xi, yi] = -direction
-                else:
-                    directions[xi, yi] = direction
-
-        return directions
-
-    @staticmethod
-    def find_nearest_skeleton_directions(vessel_mask, skeleton, skeleton_directions):
-        """
-        血管上の点に最も近いスケルトンの方向を割り当て
-        """
-        distance, indices = distance_transform_edt(~skeleton, return_indices=True)
-
-        vessel_directions = np.zeros((*vessel_mask.shape, 2))
-        x, y = np.nonzero(vessel_mask)
-
-        for xi, yi in zip(x, y):
-            nearest_x, nearest_y = indices[:, xi, yi]
-            if skeleton[nearest_x, nearest_y]:  # 最近接点がスケルトン上であることを確認
-                direction = skeleton_directions[nearest_x, nearest_y]
-                vessel_directions[xi, yi] = direction
-
-        return vessel_directions
-
-
 class ToTensor:
     """画像とマスクをテンソルに変換するクラス"""
     def __call__(self, sample):
-        # 全てのkeyに対して変換を適用
         sample['image'] = transforms.ToTensor()(sample['image']).float()
         sample['mask'] = transforms.ToTensor()(sample['mask']).float()
         sample['transformed_image'] = transforms.ToTensor()(sample['transformed_image']).float()
         sample['transformed_mask'] = transforms.ToTensor()(sample['transformed_mask']).float()
-        sample['skeleton'] = transforms.ToTensor()(sample['skeleton']).float()
-        sample['vessel_directions'] = transforms.ToTensor()(sample['vessel_directions']).float()
         
         return sample
 
@@ -218,23 +130,17 @@ def get_transform(args, mode='training'):
     if mode == 'training':
         transform = transforms.Compose([
             StandardTransform(),
-            PadToSquare(),
             Keep(),
-            Skeletonize(),
-            CalculateSkeletonDirections(),
             ToTensor(),
         ])
     else:
         transform = transforms.Compose([
             PadToSquare(),
             Keep(),
-            Skeletonize(),
-            CalculateSkeletonDirections(),
             ToTensor(),
         ])
     
     return transform
-
 
 
 class DRIVEDataset(Dataset):
@@ -245,7 +151,7 @@ class DRIVEDataset(Dataset):
         self.data_file = os.listdir(self.data_path)
         self.image_file = self._select_img(self.data_file)
         if split is not None and mode == "training":
-            # assert split > 0 and split < 1
+            assert split > 0 and split < 1
             if not is_val:
                 self.image_file = self.image_file[:int(split*len(self.image_file))]
             else:
@@ -264,12 +170,10 @@ class DRIVEDataset(Dataset):
             mask = pickle.load(file)
             mask = np.transpose(mask, (1, 2, 0))
 
-        sample = {'image': image, 'mask': mask}
+        sample = {'image': image, 'mask': mask, 'meta': {'img_path': image_file, 'mask_path': gt_file}}
         
         if self.transform:
             sample = self.transform(sample)
-
-        sample['meta'] = {'img_path': image_file, 'mask_path': gt_file}
 
         return sample
     

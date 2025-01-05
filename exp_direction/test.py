@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt
 from tqdm import tqdm
 import torch.distributed as dist
 from torch.utils.data import DataLoader, DistributedSampler
-from models.fr_unet import Anisotropic_Diffusion_OnlyDiv as Model
+from models.fr_unet import Anisotropic_Diffusion as Model
 from models.lse import select_pde
 import dataloader.drive_loader as drive
 

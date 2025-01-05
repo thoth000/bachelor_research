@@ -54,8 +54,6 @@ def check_args():
     parser.add_argument('--dataset', type=str, default='drive',
                         choices=['pascal', 'pascal-sbd', 'davis2016', 'cityscapes-processed', 'drive'])
     parser.add_argument('--transform', type=str, default='fr_unet', choices=['fr_unet', 'standard'])
-    parser.add_argument('--pretrained_path', type=str, required=False, default=None)
-    parser.add_argument('--fix_pretrained_params', type=bool, required=False, default=False)
 
     # モデル固有のパラメータ
     parser.add_argument('--num_classes', type=int, default=1)
@@ -65,20 +63,9 @@ def check_args():
     parser.add_argument('--fuse', type=bool, default=True)
     parser.add_argument('--out_ave', type=bool, default=True)
     
-    # lossのパラメータ
-    parser.add_argument('--lambda_mask', type=float, default=0.5)
-    parser.add_argument('--lambda_center', type=float, default=0.3)
-    parser.add_argument('--lambda_cosine', type=float, default=0.1)
-    parser.add_argument('--lambda_anisotropic', type=float, default=0.1)
-    
-    # pdeのパラメータ
-    parser.add_argument('--M', type=float, default=0.1)
-    parser.add_argument('--dt', type=float, default=0.1)
-    parser.add_argument('--steps', type=int, default=100)
-    
     # datasetのパス
     parser.dataset_path = parser.add_argument('--dataset_path', type=str, default="/home/sano/dataset/DRIVE")
-    parser.dataset_opt = parser.add_argument('--dataset_opt', type=str, default="pad")
+    parser.dataset_opt = parser.add_argument('--dataset_opt', type=str, default="pro")
     
     args = parser.parse_args()
 

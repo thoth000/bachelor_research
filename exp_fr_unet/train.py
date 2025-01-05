@@ -12,7 +12,7 @@ import torch.multiprocessing as mp
 
 import dataloader.drive_loader as drive
 
-from models.fr_unet import Anisotropic_Diffusion as Model
+from models.fr_unet import FR_UNet as Model
 from evaluate import evaluate
 from loss import *
 
@@ -92,47 +92,28 @@ def save_args_to_file(args, filepath):
         for arg, value in vars(args).items():
             f.write(f'{arg}: {value}\n')    
 
-def fix_module_prefix(state_dict):
-    return {f"module.model.{k.removeprefix('module.')}": v for k, v in state_dict.items()}
-
-def train_one_epoch(args, model, dataloader, criterion, optimizer, device, world_size):
+def train_one_epoch(model, dataloader, criterion, optimizer, device, world_size):
     model.train()
-    optimizer.zero_grad()
     train_loss = torch.tensor(0.0, device=device)  # train_lossをテンソルで初期化
 
     for i, sample in enumerate(dataloader):
         images = sample['transformed_image'].to(device)
         targets = sample['transformed_mask'].to(device)
 
-        main_out, s_long, s_short, v_long = model(images)
-        # loss = criterion(main_out, targets)
+        optimizer.zero_grad()
+        main_out = model(images)
         
-        # 個別の損失を計算
-        loss_mask = BCELoss()(main_out, sample['transformed_mask'].to(device))
-        loss_center = BCELoss()(main_out, sample['skeleton'].to(device))
-        loss_cosine = CosineLoss()(v_long, sample['vessel_directions'].to(device))
-        loss_anisotropic = AnisotropicLoss()(s_long, s_short, sample['transformed_mask'].to(device)) 
-        
-        loss = args.lambda_mask * loss_mask + args.lambda_center * loss_center + args.lambda_cosine * loss_cosine + args.lambda_anisotropic * loss_anisotropic
-        
-        # 勾配を計算して累積
+        loss = criterion(main_out, targets)
         loss.backward()
+        optimizer.step()
+
         train_loss += loss  # 累積
 
     # DDP: 全プロセスで損失を集約
     if dist.is_initialized():
-        for param in model.parameters():
-            if param.grad is not None:
-                dist.all_reduce(param.grad.data, op=dist.ReduceOp.SUM)
-                param.grad /= world_size  # プロセス数で割って平均化
-        # 損失情報も集約
         dist.all_reduce(train_loss, op=dist.ReduceOp.SUM)
         train_loss /= world_size  # プロセス数で割って平均化
 
-    # epoch終了時に最適化
-    optimizer.step()
-    optimizer.zero_grad()
-    
     avg_loss = train_loss.item() / len(dataloader)  # 最終的にスカラー化してからバッチ数で平均
     return avg_loss
 
@@ -143,11 +124,8 @@ def train(args, writer=None):
     transform_train = drive.get_transform(args, mode='training')
     transform_val = drive.get_transform(args, mode='val')
     
-    # trainset = drive.DRIVEDataset("training", args.dataset_path, args.dataset_opt ,is_val = False, split=0.9, transform = transform_train)
-    # valset = drive.DRIVEDataset("training", args.dataset_path, args.dataset_opt, is_val = True, split=0.9, transform = transform_val)
-
-    trainset = drive.DRIVEDataset("training", args.dataset_path, args.dataset_opt ,is_val = False, split=1.0, transform = transform_train)
-    valset = drive.DRIVEDataset("test", args.dataset_path, args.dataset_opt, transform = transform_val)
+    trainset = drive.DRIVEDataset("training", args.dataset_path, args.dataset_opt ,is_val = False, split=0.9, transform = transform_train)
+    valset = drive.DRIVEDataset("training", args.dataset_path, args.dataset_opt, is_val = True, split=0.9, transform = transform_val)
 
     # DistributedSamplerを使ってデータを分割
     train_sampler = DistributedSampler(trainset, num_replicas=args.world_size, rank=args.rank)
@@ -160,48 +138,6 @@ def train(args, writer=None):
     model = Model(args).to(device)
     model = DDP(model, device_ids=[args.rank], find_unused_parameters=True)
 
-    if args.pretrained_path is not None: # 事前学習済みモデルがある場合、optimizerで最終層のみを更新
-        # モデル状態を取得
-        current_state_dict = model.state_dict()
-        
-        pretrained_state_dict = torch.load(args.pretrained_path, weights_only=False)['state_dict']
-        
-        pretrained_state_dict = fix_module_prefix(pretrained_state_dict)
-        
-        # フィルタリングして、一致する層だけを更新
-        # 一致する層だけを更新する辞書
-        filtered_state_dict = {
-            k: v for k, v in pretrained_state_dict.items()
-            if k in current_state_dict and v.size() == current_state_dict[k].size()
-        }
-
-        # 一致しない層を格納するリスト
-        delse_layers = [k for k in current_state_dict if k not in filtered_state_dict]
-        
-        # print(f"Matched keys: {len(filtered_state_dict.keys())}, Unmatched keys: {len(delse_layers)}")
-        
-        # 事前学習済みモデルを用いて一致層を更新
-        current_state_dict.update(filtered_state_dict)
-        model.load_state_dict(current_state_dict)
-        
-        if args.fix_pretrained_params: # 訓練済みモデルのパラメータを固定
-            # 全てのパラメータを固定 (requires_grad=False)
-            for param in model.parameters():
-                param.requires_grad = False
-        
-            # DELSEのみのパラメータを学習可能に (requires_grad=True)
-            for name, param in model.named_parameters():
-                if name in delse_layers:
-                    param.requires_grad = True
-            delse_params = filter(lambda p: p.requires_grad, model.parameters())
-        
-            # optimizerの設定
-            optimizer = optim.Adam(delse_params, lr=args.lr, weight_decay=args.weight_decay)
-        else: # 訓練済みモデルのパラメータを固定しない
-            optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
-    else:
-        optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
-    
     # ロス関数、オプティマイザ、スケジューラ設定
     if args.criterion == 'Dice':
         criterion = DiceLoss()
@@ -212,7 +148,7 @@ def train(args, writer=None):
     elif args.criterion == 'BalancedBCE':
         criterion = BalancedBinaryCrossEntropyLoss()
     else:
-        criterion = BCELoss()
+        criterion = torch.nn.BCEWithLogitsLoss()
     
     optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     
@@ -235,14 +171,14 @@ def train(args, writer=None):
         torch.cuda.empty_cache()
         dist.barrier() # プロセスの同期
         train_sampler.set_epoch(epoch)
-        train_loss = train_one_epoch(args, model, trainloader, criterion, optimizer, device, args.world_size)
+        train_loss = train_one_epoch(model, trainloader, criterion, optimizer, device, args.world_size)
         scheduler.step()
         
         if args.rank == 0:
             writer.add_scalar('Loss/train', train_loss, epoch)
         
         if epoch % args.val_interval == args.val_interval - 1:
-            val_loss, acc, sen, spe, iou, miou, dice, center_dice = evaluate(model, valloader, criterion, epoch, args, device)
+            val_loss, acc, sen, spe, iou, miou, dice = evaluate(model, valloader, criterion, epoch, args, device)
             if args.rank == 0:
                 writer.add_scalar('Loss/val', val_loss, epoch)
                 writer.add_scalar('Accuracy', acc, epoch)
@@ -251,7 +187,6 @@ def train(args, writer=None):
                 writer.add_scalar('IoU', iou, epoch)
                 writer.add_scalar('MIoU', miou, epoch)
                 writer.add_scalar('Dice', dice, epoch)
-                writer.add_scalar('Centerline Dice', center_dice, epoch)
                 
                 if val_loss < best_info['val_loss']:
                     best_info['epoch'] = epoch
