@@ -20,7 +20,7 @@ MODEL_NAME="fr_unet"
 MAX_EPOCH=200
 BATCH_SIZE=1
 RESOLUTION=768
-LEARNING_RATE=1e-3
+LEARNING_RATE=1e-2
 ETA_MIN=0
 WEIGHT_DECAY=1e-5
 CRITERION="Dice"
@@ -45,6 +45,7 @@ LAMBDA_ANISOTROPIC=0
 EXP_NAME="${ALPHA}_${LAMBDA_MAIN}_${LAMBDA_COSINE}_${LAMBDA_ANISOTROPIC}"
 
 # PyTorch DDPでトレーニングを実行
+"""
 torchrun --nproc_per_node=$NUM_GPUS --nnodes=1 --node_rank=0 --master_port=$MASTER_PORT main.py \
     --model_name $MODEL_NAME \
     --max_epoch $MAX_EPOCH \
@@ -65,11 +66,13 @@ torchrun --nproc_per_node=$NUM_GPUS --nnodes=1 --node_rank=0 --master_port=$MAST
     --dataset_path $DATASET_PATH \
     --dataset_opt $DATASET_OPT \
     --pretrained_path $PRETRAINED_PATH \
+    --fix_pretrained_params True \
     --save_mask \
     --alpha $ALPHA \
     --lambda_main $LAMBDA_MAIN \
     --lambda_cosine $LAMBDA_COSINE \
     --lambda_anisotropic $LAMBDA_ANISOTROPIC
+"""
 
 ALPHA=0.1
 EXP_NAME="${ALPHA}_${LAMBDA_MAIN}_${LAMBDA_COSINE}_${LAMBDA_ANISOTROPIC}"
@@ -93,6 +96,7 @@ torchrun --nproc_per_node=$NUM_GPUS --nnodes=1 --node_rank=0 --master_port=$MAST
     --dataset_path $DATASET_PATH \
     --dataset_opt $DATASET_OPT \
     --pretrained_path $PRETRAINED_PATH \
+    --fix_pretrained_params True \
     --save_mask \
     --alpha $ALPHA \
     --lambda_main $LAMBDA_MAIN \
@@ -121,6 +125,7 @@ torchrun --nproc_per_node=$NUM_GPUS --nnodes=1 --node_rank=0 --master_port=$MAST
     --dataset_path $DATASET_PATH \
     --dataset_opt $DATASET_OPT \
     --pretrained_path $PRETRAINED_PATH \
+    --fix_pretrained_params True \
     --save_mask \
     --alpha $ALPHA \
     --lambda_main $LAMBDA_MAIN \
@@ -149,6 +154,7 @@ torchrun --nproc_per_node=$NUM_GPUS --nnodes=1 --node_rank=0 --master_port=$MAST
     --dataset_path $DATASET_PATH \
     --dataset_opt $DATASET_OPT \
     --pretrained_path $PRETRAINED_PATH \
+    --fix_pretrained_params True \
     --save_mask \
     --alpha $ALPHA \
     --lambda_main $LAMBDA_MAIN \
@@ -177,6 +183,7 @@ torchrun --nproc_per_node=$NUM_GPUS --nnodes=1 --node_rank=0 --master_port=$MAST
     --dataset_path $DATASET_PATH \
     --dataset_opt $DATASET_OPT \
     --pretrained_path $PRETRAINED_PATH \
+    --fix_pretrained_params True \
     --save_mask \
     --alpha $ALPHA \
     --lambda_main $LAMBDA_MAIN \
@@ -205,6 +212,7 @@ torchrun --nproc_per_node=$NUM_GPUS --nnodes=1 --node_rank=0 --master_port=$MAST
     --dataset_path $DATASET_PATH \
     --dataset_opt $DATASET_OPT \
     --pretrained_path $PRETRAINED_PATH \
+    --fix_pretrained_params True \
     --save_mask \
     --alpha $ALPHA \
     --lambda_main $LAMBDA_MAIN \

@@ -49,13 +49,6 @@ def check_args(mode='test'):
     
     args = parser.parse_args()
     
-    # dataset
-    if args.dataset == 'drive':
-        args.num_classes = 1
-        # test directories
-        args.image_dir_test = "/home/sano/dataset/drive_gray/test/images"
-        args.mask_dir_test = "/home/sano/dataset/drive_gray/test/1st_manual"
-    
     return args
 
 

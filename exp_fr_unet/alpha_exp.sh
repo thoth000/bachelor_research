@@ -20,7 +20,7 @@ MODEL_NAME="fr_unet"
 MAX_EPOCH=500
 BATCH_SIZE=4
 RESOLUTION=768
-LEARNING_RATE=1e-3
+LEARNING_RATE=1e-2
 ETA_MIN=0
 WEIGHT_DECAY=1e-5
 CRITERION="BCE"
@@ -34,7 +34,7 @@ NUM_WORKERS=4
 DATASET="drive"
 TRANSFORM="fr_unet"
 DATASET_PATH="/home/sano/dataset/DRIVE"
-DATASET_OPT="pad"
+DATASET_OPT="560"
 PRETRAINED_PATH="/home/sano/documents/delse_fr_unet_drive/models/fr_unet_base.pth"
 
 # ALPHA = 0.0

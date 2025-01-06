@@ -143,41 +143,69 @@ class CalculateSkeletonDirections:
     def __call__(self, sample):
         skeleton = sample.get('skeleton', None)
         mask = sample['mask'].squeeze()
-        
+
         if skeleton is not None:
-            skeleton_directions = self.calculate_skeleton_directions_with_central_difference(skeleton)
+            skeleton_directions = self.calculate_skeleton_directions(skeleton)
             vessel_directions = self.find_nearest_skeleton_directions(mask, skeleton, skeleton_directions)
-            
+
             sample['skeleton_directions'] = skeleton_directions
             sample['vessel_directions'] = vessel_directions
-        
+
         return sample
 
     @staticmethod
-    def calculate_skeleton_directions_with_central_difference(skeleton):
+    def calculate_skeleton_directions(skeleton, initial_window_size=5, max_window_size=50):
         """
-        スケルトン上の方向ベクトルを中心差分法で計算。
+        スケルトン上の各点の方向を計算し、x方向が正になるよう制限。
+        ゼロベクトルが発生した場合、ウィンドウサイズを動的に広げて再計算。
+
         Args:
             skeleton (numpy.ndarray): スケルトン (H, W) バイナリマスク
+            initial_window_size (int): 最初の近傍ウィンドウサイズ（奇数）
+            max_window_size (int): 最大の近傍ウィンドウサイズ（奇数）
+
         Returns:
             directions (numpy.ndarray): スケルトン点ごとの方向ベクトル (H, W, 2)
         """
         H, W = skeleton.shape
-        directions = np.zeros((H, W, 2))
-        skeleton = skeleton.astype(np.int8)
+        directions = np.zeros((H, W, 2))  # 初期化
 
-        x, y = np.nonzero(skeleton)
+        x, y = np.nonzero(skeleton)  # スケルトンの点を取得
 
         for xi, yi in zip(x, y):
-            dx = skeleton[max(xi-1, 0):min(xi+2, H), yi] - skeleton[max(xi-2, 0):min(xi+1, H), yi]
-            dy = skeleton[xi, max(yi-1, 0):min(yi+2, W)] - skeleton[xi, max(yi-2, 0):min(yi+1, W)]
-            direction = np.array([np.sum(dx), np.sum(dy)])
-            if np.linalg.norm(direction) > 0:
-                direction = direction / np.linalg.norm(direction)
-                if direction[0] < 0:
-                    directions[xi, yi] = -direction
+            window_size = initial_window_size
+            direction_found = False
+
+            while not direction_found and window_size <= max_window_size:
+                half_window = window_size // 2
+                # 近傍範囲を計算
+                x_start, x_end = max(xi - half_window, 0), min(xi + half_window + 1, H)
+                y_start, y_end = max(yi - half_window, 0), min(yi + half_window + 1, W)
+
+                # 近傍のスケルトン点を取得
+                neighbors = skeleton[x_start:x_end, y_start:y_end]
+                neighbor_x, neighbor_y = np.nonzero(neighbors)
+                
+                # 近傍内の相対座標を計算
+                directions_local = np.stack(
+                    [neighbor_x - (xi - x_start), neighbor_y - (yi - y_start)],
+                    axis=1,
+                )
+                mean_direction = np.mean(directions_local, axis=0)
+
+                if np.linalg.norm(mean_direction) > 0:  # ゼロベクトルでない場合
+                    direction = mean_direction / np.linalg.norm(mean_direction)
+                    if direction[0] < 0:  # x方向が負なら反転
+                        directions[xi, yi] = -direction
+                    else:
+                        directions[xi, yi] = direction
+                    direction_found = True  # 有効な方向が見つかった場合
                 else:
-                    directions[xi, yi] = direction
+                    window_size += 2  # ウィンドウサイズを広げる
+
+            if not direction_found:
+                # 最大ウィンドウサイズでも方向が見つからなかった場合
+                directions[xi, yi] = [0, 0]  # ゼロベクトルを割り当て
 
         return directions
 
@@ -198,6 +226,7 @@ class CalculateSkeletonDirections:
                 vessel_directions[xi, yi] = direction
 
         return vessel_directions
+
 
 
 class ToTensor:

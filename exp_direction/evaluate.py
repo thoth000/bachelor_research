@@ -20,7 +20,7 @@ def evaluate(model, dataloader, criterion, epoch, args, device):
     total_fp = torch.tensor(0.0, device=device)
     total_fn = torch.tensor(0.0, device=device)
     total_dice = torch.tensor(0.0, device=device)
-    total_cldice= torch.tensor(0.0, device=device)
+    total_cl_dice= torch.tensor(0.0, device=device)
     
     if args.save_mask or epoch == args.max_epoch - 1:
         # ディレクトリ生成

@@ -30,13 +30,25 @@ def check_args():
 
     # 必要な引数を設定
     parser.add_argument('--model_name', type=str, default='FR_UNet')
-    parser.add_argument('--batch', type=int, default=1)
-    parser.add_argument('--save_dir_root', type=str, default='result')
-    parser.add_argument('--save_name', type=str, default='exp_YYYYMMDD_S')
+    parser.add_argument('--max_epoch', type=int, default=300)
+    parser.add_argument('--batch', type=int, default=6)
+    parser.add_argument('--resolution', type=int, default=512)
+    parser.add_argument('--exp_dir', type=str, default='exp')
+    parser.add_argument('--exp_name', type=str, default='exp_YYYYMMDD_S')
+    parser.add_argument('--val_interval', type=int, default=20)
     parser.add_argument('--save_mask', action='store_true', help='If specified, save predicted mask when evaluate')  # 指定すればTrue
+    parser.add_argument('--lr', type=float, default=5e-4)
+    parser.add_argument('--eta_min', type=float, default=1e-6)
+    parser.add_argument('--weight_decay', type=float, default=0.05)
+    parser.add_argument('--scheduler', type=str, default='cosine_annealing', choices=['constant', 'cosine_annealing'])
     parser.add_argument('--threshold', type=float, default=0.5)
+    parser.add_argument('--criterion', type=str, default='BCE', choices=['Tversky', 'Focal', 'Dice', 'BCE', 'BalancedBCE'])
     parser.add_argument('--num_workers', type=int, default=4)
-    parser.add_argument('--pretrained_path', type=str, default='pretrained.pth')
+    parser.add_argument('--dataset', type=str, default='drive',
+                        choices=['pascal', 'pascal-sbd', 'davis2016', 'cityscapes-processed', 'drive'])
+    parser.add_argument('--transform', type=str, default='fr_unet', choices=['fr_unet', 'standard'])
+    parser.add_argument('--pretrained_path', type=str, required=False, default=None)
+    parser.add_argument('--fix_pretrained_params', type=bool, required=False, default=False)
 
     # モデル固有のパラメータ
     parser.add_argument('--num_classes', type=int, default=1)
@@ -46,24 +58,27 @@ def check_args():
     parser.add_argument('--fuse', type=bool, default=True)
     parser.add_argument('--out_ave', type=bool, default=True)
     
-    # chのパラメータ
-    parser.add_argument('--pde', type=int, default=0)
-    parser.add_argument('--D', type=float, default=1.0)
-    parser.add_argument('--gamma', type=float, default=1.0)
-    parser.add_argument('--dt', type=float, default=0.01)
-    parser.add_argument('--steps', type=int, default=100)
+    # lossのパラメータ
+    parser.add_argument('--alpha', type=float, default=0.5)
+    parser.add_argument('--lambda_main', type=float, default=0.7)
+    parser.add_argument('--lambda_cosine', type=float, default=0.2)
+    parser.add_argument('--lambda_anisotropic', type=float, default=0.1)
     
+    # pdeのパラメータ
+    parser.add_argument('--M', type=float, default=0.1)
+    parser.add_argument('--dt', type=float, default=0.1)
+    parser.add_argument('--steps', type=int, default=100)
     
     # datasetのパス
     parser.dataset_path = parser.add_argument('--dataset_path', type=str, default="/home/sano/dataset/DRIVE")
-    parser.dataset_opt = parser.add_argument('--dataset_opt', type=str, default="pro")
+    parser.dataset_opt = parser.add_argument('--dataset_opt', type=str, default="pad")
     
     args = parser.parse_args()
 
-    args.save_dir_root = os.path.join(os.path.dirname(os.path.abspath(__file__)), args.save_dir_root)
+    args.save_dir_root = os.path.join(os.path.dirname(os.path.abspath(__file__)), args.exp_dir)
     if not os.path.exists(args.save_dir_root):
         os.makedirs(args.save_dir_root, exist_ok=True)
-    args.save_dir = os.path.join(args.save_dir_root, args.save_name)
+    args.save_dir = os.path.join(args.save_dir_root, args.exp_name)
     if not os.path.exists(args.save_dir):
         os.makedirs(args.save_dir, exist_ok=True)
 
@@ -79,7 +94,7 @@ def test_predict(model, dataloader, args, device):
     total_fp = torch.tensor(0.0, device=device)
     total_fn = torch.tensor(0.0, device=device)
     total_dice = torch.tensor(0.0, device=device)
-    total_cldice = torch.tensor(0.0, device=device)
+    total_cl_dice = torch.tensor(0.0, device=device)
     
     tbar = tqdm(enumerate(dataloader), total=len(dataloader), ncols=80) if args.rank == 0 else enumerate(dataloader)
     
@@ -129,7 +144,7 @@ def test_predict(model, dataloader, args, device):
     dist.all_reduce(total_fp, op=dist.ReduceOp.SUM)
     dist.all_reduce(total_fn, op=dist.ReduceOp.SUM)
     dist.all_reduce(total_dice, op=dist.ReduceOp.SUM)
-    dist.all_reduce(total_dice, op=dist.ReduceOp.SUM)
+    dist.all_reduce(total_cl_dice, op=dist.ReduceOp.SUM)
     
     acc = (total_tp + total_tn) / (total_tp + total_tn + total_fp + total_fn)
     sen = total_tp / (total_tp + total_fn) if (total_tp + total_fn) > 0 else torch.tensor(0.0, device=device)

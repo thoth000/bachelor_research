@@ -20,7 +20,7 @@ MODEL_NAME="fr_unet"
 MAX_EPOCH=500
 BATCH_SIZE=4
 RESOLUTION=768
-LEARNING_RATE=1e-3
+LEARNING_RATE=1e-2
 ETA_MIN=0
 WEIGHT_DECAY=1e-5
 CRITERION="BCE"
@@ -37,7 +37,7 @@ DATASET_PATH="/home/sano/dataset/DRIVE"
 DATASET_OPT="pad"
 PRETRAINED_PATH="/home/sano/documents/delse_fr_unet_drive/models/fr_unet_base.pth"
 
-ALPHA=0.2
+ALPHA=0
 
 # PyTorch DDPでトレーニングを実行
 torchrun --nproc_per_node=$NUM_GPUS --nnodes=1 --node_rank=0 --master_port=$MASTER_PORT main.py \

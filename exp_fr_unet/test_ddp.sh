@@ -16,7 +16,7 @@ RESOLUTION=584
 THRESHOLD=0.5
 RESULT_DIR="result"
 DATASET_PATH="/home/sano/dataset/DRIVE"
-DATASET_OPT="128"
+DATASET_OPT="pad"
 PRETRAINED_PATH="/home/sano/documents/fr_unet_ideal/models/checkpoint-epoch40.pth"
 
 # 実行時間のタイムスタンプを取得
