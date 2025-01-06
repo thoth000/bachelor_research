@@ -3,6 +3,7 @@ import os
 from tqdm import tqdm
 import datetime
 import torch
+import torch.nn.functional as F
 from torch.utils.tensorboard import SummaryWriter
 from torch import optim
 from torch.utils.data import DataLoader, DistributedSampler
@@ -92,27 +93,100 @@ def save_args_to_file(args, filepath):
         for arg, value in vars(args).items():
             f.write(f'{arg}: {value}\n')    
 
-def train_one_epoch(model, dataloader, criterion, optimizer, device, world_size):
+
+def minpool(input, kernel_size=3, stride=1, padding=1):
+    """
+    最小プーリング
+    Args:
+        input (torch.Tensor): 入力テンソル (N, C, H, W)
+        kernel_size (int): カーネルサイズ
+        stride (int): ストライド
+        padding (int): パディング
+    Returns:
+        torch.Tensor: 出力テンソル (N, C, H, W)
+    """
+    return F.max_pool2d(input*-1, kernel_size, stride, padding)*-1 # 最大プーリングを適用して再度反転
+
+
+def soft_skeleton(mask, k=30):
+    """
+    ソフトスケルトン変換
+    Args:
+        mask (torch.Tensor): マスク画像 (N, 1, H, W)
+        k (int): 最大管幅
+    Returns:
+        torch.Tensor: ソフトスケルトン画像 (N, 1, H, W)
+    """
+    # Initialize I' as maxpool(minpool(mask))
+    I_prime = F.max_pool2d(minpool(mask, kernel_size=3, stride=1, padding=1), kernel_size=3, stride=1, padding=1)
+    # Initialize S as ReLU(I - I')
+    S = F.relu(mask - I_prime)
+
+    # Iterative refinement of the skeleton
+    for _ in range(k):
+        # Update I
+        mask = minpool(mask, kernel_size=3, stride=1, padding=1)
+        # Update I'
+        I_prime = F.max_pool2d(minpool(mask, kernel_size=3, stride=1, padding=1), kernel_size=3, stride=1, padding=1)
+        # Update S
+        S = S + (1 - S) * F.relu(mask - I_prime)
+
+    return S
+
+
+class Loss(torch.nn.Module):
+    def forward(self, preds, masks_gt, soft_skeleton_pred, soft_skeleton_gt, alpha=0.5):
+        # バッチ次元を保持し、他の次元をフラット化
+        batch_size = masks_gt.size(0)
+        preds = preds.view(batch_size, -1)
+        masks_gt = masks_gt.view(batch_size, -1)
+        soft_skeleton_pred = soft_skeleton_pred.view(batch_size, -1)
+        soft_skeleton_gt = soft_skeleton_gt.view(batch_size, -1)
+
+        # soft dice loss (バッチ次元ごとに計算)
+        dice_loss = 1 - (2 * torch.sum(masks_gt * preds, dim=1) + 1) / \
+                    (torch.sum(masks_gt, dim=1) + torch.sum(preds, dim=1) + 1)
+
+        # soft cl dice loss (バッチ次元ごとに計算)
+        tprec = (torch.sum(soft_skeleton_pred * masks_gt, dim=1) + 1) / \
+                (torch.sum(soft_skeleton_pred, dim=1) + 1)
+        tsens = (torch.sum(soft_skeleton_gt * preds, dim=1) + 1) / \
+                (torch.sum(soft_skeleton_gt, dim=1) + 1)
+        cl_dice_loss = 1 - (2 * tprec * tsens) / (tprec + tsens)
+
+        # バッチ次元ごとに損失を組み合わせ
+        loss = (1 - alpha) * dice_loss + alpha * cl_dice_loss
+
+        # バッチ全体の損失を平均化
+        return loss.mean()
+
+
+def train_one_epoch(args, model, dataloader, criterion, optimizer, device, world_size):
     model.train()
     train_loss = torch.tensor(0.0, device=device)  # train_lossをテンソルで初期化
 
+    optimizer.zero_grad()
     for i, sample in enumerate(dataloader):
         images = sample['transformed_image'].to(device)
-        targets = sample['transformed_mask'].to(device)
-
-        optimizer.zero_grad()
-        main_out = model(images)
+        masks = sample['transformed_mask'].to(device)
         
-        loss = criterion(main_out, targets)
+        preds = model(images)
+        preds = torch.sigmoid(preds)
+        soft_skeleton_pred = soft_skeleton(preds)
+        soft_skeleton_gt = soft_skeleton(masks)
+        
+        # loss
+        loss = Loss()(preds, masks, soft_skeleton_pred, soft_skeleton_gt, alpha=args.alpha)
         loss.backward()
-        optimizer.step()
-
+        
         train_loss += loss  # 累積
 
     # DDP: 全プロセスで損失を集約
     if dist.is_initialized():
         dist.all_reduce(train_loss, op=dist.ReduceOp.SUM)
         train_loss /= world_size  # プロセス数で割って平均化
+
+    optimizer.step()  # 勾配を適用
 
     avg_loss = train_loss.item() / len(dataloader)  # 最終的にスカラー化してからバッチ数で平均
     return avg_loss
@@ -171,14 +245,14 @@ def train(args, writer=None):
         torch.cuda.empty_cache()
         dist.barrier() # プロセスの同期
         train_sampler.set_epoch(epoch)
-        train_loss = train_one_epoch(model, trainloader, criterion, optimizer, device, args.world_size)
+        train_loss = train_one_epoch(args, model, trainloader, criterion, optimizer, device, args.world_size)
         scheduler.step()
         
         if args.rank == 0:
             writer.add_scalar('Loss/train', train_loss, epoch)
         
         if epoch % args.val_interval == args.val_interval - 1:
-            val_loss, acc, sen, spe, iou, miou, dice = evaluate(model, valloader, criterion, epoch, args, device)
+            val_loss, acc, sen, spe, iou, miou, dice, cl_dice = evaluate(model, valloader, criterion, epoch, args, device)
             if args.rank == 0:
                 writer.add_scalar('Loss/val', val_loss, epoch)
                 writer.add_scalar('Accuracy', acc, epoch)
@@ -187,6 +261,7 @@ def train(args, writer=None):
                 writer.add_scalar('IoU', iou, epoch)
                 writer.add_scalar('MIoU', miou, epoch)
                 writer.add_scalar('Dice', dice, epoch)
+                writer.add_scalar('CL Dice', cl_dice, epoch)
                 
                 if val_loss < best_info['val_loss']:
                     best_info['epoch'] = epoch
@@ -198,6 +273,7 @@ def train(args, writer=None):
         print('best epoch:', best_info['epoch'])
         best_info['args'] = vars(args)
         torch.save(best_info, os.path.join(args.save_dir, 'final_model.pth'))
+
 
 def main():
     args = check_args(mode='train')

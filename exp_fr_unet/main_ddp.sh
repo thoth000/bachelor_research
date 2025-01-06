@@ -24,6 +24,7 @@ LEARNING_RATE=1e-3
 ETA_MIN=0
 WEIGHT_DECAY=1e-5
 CRITERION="BCE"
+
 SCHEDULER="cosine_annealing"
 EXP_DIR="exp"
 EXP_NAME="exp_$(date +"%Y%m%d_%H%M%S")"  # exp_nameをタイムスタンプに基づいて設定
@@ -33,8 +34,10 @@ NUM_WORKERS=4
 DATASET="drive"
 TRANSFORM="fr_unet"
 DATASET_PATH="/home/sano/dataset/DRIVE"
-DATASET_OPT="560"
+DATASET_OPT="pad"
 PRETRAINED_PATH="/home/sano/documents/delse_fr_unet_drive/models/fr_unet_base.pth"
+
+ALPHA=0.2
 
 # PyTorch DDPでトレーニングを実行
 torchrun --nproc_per_node=$NUM_GPUS --nnodes=1 --node_rank=0 --master_port=$MASTER_PORT main.py \
@@ -55,4 +58,5 @@ torchrun --nproc_per_node=$NUM_GPUS --nnodes=1 --node_rank=0 --master_port=$MAST
     --dataset $DATASET \
     --transform $TRANSFORM \
     --dataset_path $DATASET_PATH \
-    --dataset_opt $DATASET_OPT
+    --dataset_opt $DATASET_OPT \
+    --save_mask

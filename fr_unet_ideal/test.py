@@ -108,7 +108,7 @@ def test(args):
     device = torch.device(f'cuda:{args.rank}')
     
     transform_test = drive.get_transform(args, mode='test')
-    testset = drive.DRIVEDataset("training", args.dataset_path, args.dataset_opt, transform = transform_test)
+    testset = drive.DRIVEDataset("test", args.dataset_path, args.dataset_opt, transform = transform_test)
     
     test_sampler = DistributedSampler(testset, num_replicas=args.world_size, rank=args.rank, shuffle=False)
     testloader = DataLoader(testset, batch_size=1, sampler=test_sampler, num_workers=args.num_workers)

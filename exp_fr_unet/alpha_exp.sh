@@ -17,34 +17,29 @@ NUM_GPUS=$(echo $CUDA_VISIBLE_DEVICES | awk -F',' '{print NF}')
 MODEL_NAME="fr_unet"
 
 # トレーニング用引数の指定
-MAX_EPOCH=200
-BATCH_SIZE=1
+MAX_EPOCH=500
+BATCH_SIZE=4
 RESOLUTION=768
 LEARNING_RATE=1e-3
 ETA_MIN=0
 WEIGHT_DECAY=1e-5
-CRITERION="Dice"
+CRITERION="BCE"
+
 SCHEDULER="cosine_annealing"
 EXP_DIR="exp"
 EXP_NAME="exp_$(date +"%Y%m%d_%H%M%S")"  # exp_nameをタイムスタンプに基づいて設定
-VAL_INTERVAL=5
+VAL_INTERVAL=10
 THRESHOLD=0.5
 NUM_WORKERS=4
 DATASET="drive"
 TRANSFORM="fr_unet"
 DATASET_PATH="/home/sano/dataset/DRIVE"
-DATASET_OPT="560"
-PRETRAINED_PATH="/home/sano/documents/trainable_allen-cahn/models/checkpoint-epoch40.pth"
+DATASET_OPT="pad"
+PRETRAINED_PATH="/home/sano/documents/delse_fr_unet_drive/models/fr_unet_base.pth"
 
-# Lossの重みを指定
-ALPHA=0
-LAMBDA_MAIN=1.0
-LAMBDA_COSINE=0
-LAMBDA_ANISOTROPIC=0 
-
-EXP_NAME="${ALPHA}_${LAMBDA_MAIN}_${LAMBDA_COSINE}_${LAMBDA_ANISOTROPIC}"
-
-# PyTorch DDPでトレーニングを実行
+# ALPHA = 0.0
+ALPHA=0.0
+EXP_NAME="${DATASET_OPT}_alpha_${ALPHA}"
 torchrun --nproc_per_node=$NUM_GPUS --nnodes=1 --node_rank=0 --master_port=$MASTER_PORT main.py \
     --model_name $MODEL_NAME \
     --max_epoch $MAX_EPOCH \
@@ -64,15 +59,12 @@ torchrun --nproc_per_node=$NUM_GPUS --nnodes=1 --node_rank=0 --master_port=$MAST
     --transform $TRANSFORM \
     --dataset_path $DATASET_PATH \
     --dataset_opt $DATASET_OPT \
-    --pretrained_path $PRETRAINED_PATH \
     --save_mask \
-    --alpha $ALPHA \
-    --lambda_main $LAMBDA_MAIN \
-    --lambda_cosine $LAMBDA_COSINE \
-    --lambda_anisotropic $LAMBDA_ANISOTROPIC
+    --alpha $ALPHA
 
+# ALPHA = 0.1
 ALPHA=0.1
-EXP_NAME="${ALPHA}_${LAMBDA_MAIN}_${LAMBDA_COSINE}_${LAMBDA_ANISOTROPIC}"
+EXP_NAME="${DATASET_OPT}_alpha_${ALPHA}"
 torchrun --nproc_per_node=$NUM_GPUS --nnodes=1 --node_rank=0 --master_port=$MASTER_PORT main.py \
     --model_name $MODEL_NAME \
     --max_epoch $MAX_EPOCH \
@@ -92,15 +84,12 @@ torchrun --nproc_per_node=$NUM_GPUS --nnodes=1 --node_rank=0 --master_port=$MAST
     --transform $TRANSFORM \
     --dataset_path $DATASET_PATH \
     --dataset_opt $DATASET_OPT \
-    --pretrained_path $PRETRAINED_PATH \
     --save_mask \
-    --alpha $ALPHA \
-    --lambda_main $LAMBDA_MAIN \
-    --lambda_cosine $LAMBDA_COSINE \
-    --lambda_anisotropic $LAMBDA_ANISOTROPIC
+    --alpha $ALPHA
 
+# ALPHA = 0.2
 ALPHA=0.2
-EXP_NAME="${ALPHA}_${LAMBDA_MAIN}_${LAMBDA_COSINE}_${LAMBDA_ANISOTROPIC}"
+EXP_NAME="${DATASET_OPT}_alpha_${ALPHA}"
 torchrun --nproc_per_node=$NUM_GPUS --nnodes=1 --node_rank=0 --master_port=$MASTER_PORT main.py \
     --model_name $MODEL_NAME \
     --max_epoch $MAX_EPOCH \
@@ -120,15 +109,12 @@ torchrun --nproc_per_node=$NUM_GPUS --nnodes=1 --node_rank=0 --master_port=$MAST
     --transform $TRANSFORM \
     --dataset_path $DATASET_PATH \
     --dataset_opt $DATASET_OPT \
-    --pretrained_path $PRETRAINED_PATH \
     --save_mask \
-    --alpha $ALPHA \
-    --lambda_main $LAMBDA_MAIN \
-    --lambda_cosine $LAMBDA_COSINE \
-    --lambda_anisotropic $LAMBDA_ANISOTROPIC
+    --alpha $ALPHA
 
+# ALPHA = 0.3
 ALPHA=0.3
-EXP_NAME="${ALPHA}_${LAMBDA_MAIN}_${LAMBDA_COSINE}_${LAMBDA_ANISOTROPIC}"
+EXP_NAME="${DATASET_OPT}_alpha_${ALPHA}"
 torchrun --nproc_per_node=$NUM_GPUS --nnodes=1 --node_rank=0 --master_port=$MASTER_PORT main.py \
     --model_name $MODEL_NAME \
     --max_epoch $MAX_EPOCH \
@@ -148,15 +134,12 @@ torchrun --nproc_per_node=$NUM_GPUS --nnodes=1 --node_rank=0 --master_port=$MAST
     --transform $TRANSFORM \
     --dataset_path $DATASET_PATH \
     --dataset_opt $DATASET_OPT \
-    --pretrained_path $PRETRAINED_PATH \
     --save_mask \
-    --alpha $ALPHA \
-    --lambda_main $LAMBDA_MAIN \
-    --lambda_cosine $LAMBDA_COSINE \
-    --lambda_anisotropic $LAMBDA_ANISOTROPIC
+    --alpha $ALPHA
 
+# ALPHA = 0.4
 ALPHA=0.4
-EXP_NAME="${ALPHA}_${LAMBDA_MAIN}_${LAMBDA_COSINE}_${LAMBDA_ANISOTROPIC}"
+EXP_NAME="${DATASET_OPT}_alpha_${ALPHA}"
 torchrun --nproc_per_node=$NUM_GPUS --nnodes=1 --node_rank=0 --master_port=$MASTER_PORT main.py \
     --model_name $MODEL_NAME \
     --max_epoch $MAX_EPOCH \
@@ -176,15 +159,12 @@ torchrun --nproc_per_node=$NUM_GPUS --nnodes=1 --node_rank=0 --master_port=$MAST
     --transform $TRANSFORM \
     --dataset_path $DATASET_PATH \
     --dataset_opt $DATASET_OPT \
-    --pretrained_path $PRETRAINED_PATH \
     --save_mask \
-    --alpha $ALPHA \
-    --lambda_main $LAMBDA_MAIN \
-    --lambda_cosine $LAMBDA_COSINE \
-    --lambda_anisotropic $LAMBDA_ANISOTROPIC
+    --alpha $ALPHA
 
+# ALPHA = 0.5
 ALPHA=0.5
-EXP_NAME="${ALPHA}_${LAMBDA_MAIN}_${LAMBDA_COSINE}_${LAMBDA_ANISOTROPIC}"
+EXP_NAME="${DATASET_OPT}_alpha_${ALPHA}"
 torchrun --nproc_per_node=$NUM_GPUS --nnodes=1 --node_rank=0 --master_port=$MASTER_PORT main.py \
     --model_name $MODEL_NAME \
     --max_epoch $MAX_EPOCH \
@@ -204,9 +184,7 @@ torchrun --nproc_per_node=$NUM_GPUS --nnodes=1 --node_rank=0 --master_port=$MAST
     --transform $TRANSFORM \
     --dataset_path $DATASET_PATH \
     --dataset_opt $DATASET_OPT \
-    --pretrained_path $PRETRAINED_PATH \
     --save_mask \
-    --alpha $ALPHA \
-    --lambda_main $LAMBDA_MAIN \
-    --lambda_cosine $LAMBDA_COSINE \
-    --lambda_anisotropic $LAMBDA_ANISOTROPIC
+    --alpha $ALPHA
+
+echo "Finished"

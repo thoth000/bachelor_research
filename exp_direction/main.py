@@ -66,9 +66,9 @@ def check_args():
     parser.add_argument('--out_ave', type=bool, default=True)
     
     # lossのパラメータ
-    parser.add_argument('--lambda_mask', type=float, default=0.5)
-    parser.add_argument('--lambda_center', type=float, default=0.3)
-    parser.add_argument('--lambda_cosine', type=float, default=0.1)
+    parser.add_argument('--alpha', type=float, default=0.5)
+    parser.add_argument('--lambda_main', type=float, default=0.7)
+    parser.add_argument('--lambda_cosine', type=float, default=0.2)
     parser.add_argument('--lambda_anisotropic', type=float, default=0.1)
     
     # pdeのパラメータ
@@ -93,19 +93,6 @@ def check_args():
     config_path = os.path.join(args.save_dir, "config.txt")
     save_args_to_file(args, config_path)
 
-    # dataset
-    if args.dataset == 'drive':
-        args.num_classes = 1
-        # train
-        args.image_dir_train = "/home/sano/dataset/drive_pro/training/images"
-        args.mask_dir_train = "/home/sano/dataset/drive_pro/training/1st_manual"
-        # val
-        args.image_dir_val = "/home/sano/dataset/drive_pro/val/images"
-        args.mask_dir_val = "/home/sano/dataset/drive_pro/val/1st_manual"
-        # test
-        args.image_dir_test = "/home/sano/dataset/drive_pro/test/images"
-        args.mask_dir_test = "/home/sano/dataset/drive_pro/test/1st_manual"
-
     return args
 
 
@@ -125,17 +112,17 @@ def main():
         writer = SummaryWriter(log_dir=args.save_dir)
         train(args, writer)
         args.pretrained_path = os.path.join(args.save_dir, "final_model.pth")
-        acc, sen, spe, iou, miou, dice = test(args)
-        metrics = {'acc': acc, 'sen': sen, 'spe': spe, 'iou': iou, 'miou': miou, 'dice': dice}
+        acc, sen, spe, iou, miou, dice, cl_dice = test(args)
+        metrics = {'acc': acc, 'sen': sen, 'spe': spe, 'iou': iou, 'miou': miou, 'dice': dice, 'cl_dice': cl_dice}
         with open(os.path.join(args.save_dir, 'metrics.txt'), 'w') as f:
             for k, v in metrics.items():
-                f.write(f'{k}: {v})\n')
+                f.write(f'{k}: {v}\n')
         # writer.add_hparams(vars(args), metrics)
         writer.close()
     else: # rank0以外はtrainとtestを実行
         train(args)
         args.pretrained_path = os.path.join(args.save_dir, "final_model.pth")
-        acc, sen, spe, iou, miou, dice = test(args)
+        acc, sen, spe, iou, miou, dice, cl_dice = test(args)
     
 
 if __name__ == '__main__':

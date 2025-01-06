@@ -1,4 +1,6 @@
 import os
+import torch
+import torch.nn.functional as F
 from PIL import Image
 import numpy as np
 from skimage.morphology import skeletonize
@@ -7,6 +9,46 @@ import matplotlib.pyplot as plt
 from scipy.ndimage import distance_transform_edt
 
 import dataloader.drive_loader as drive
+
+
+def minpool(input, kernel_size=3, stride=1, padding=1):
+    """
+    最小プーリング
+    Args:
+        input (torch.Tensor): 入力テンソル (N, C, H, W)
+        kernel_size (int): カーネルサイズ
+        stride (int): ストライド
+        padding (int): パディング
+    Returns:
+        torch.Tensor: 出力テンソル (N, C, H, W)
+    """
+    return F.max_pool2d(input*-1, kernel_size, stride, padding)*-1 # 最大プーリングを適用して再度反転
+
+
+def soft_skeleton(mask, k=30):
+    """
+    ソフトスケルトン変換
+    Args:
+        mask (torch.Tensor): マスク画像 (N, 1, H, W)
+        k (int): 最大管幅
+    Returns:
+        torch.Tensor: ソフトスケルトン画像 (N, 1, H, W)
+    """
+    # Initialize I' as maxpool(minpool(mask))
+    I_prime = F.max_pool2d(minpool(mask, kernel_size=3, stride=1, padding=1), kernel_size=3, stride=1, padding=1)
+    # Initialize S as ReLU(I - I')
+    S = F.relu(mask - I_prime)
+
+    # Iterative refinement of the skeleton
+    for _ in range(k):
+        # Update I
+        mask = minpool(mask, kernel_size=3, stride=1, padding=1)
+        # Update I'
+        I_prime = F.max_pool2d(minpool(mask, kernel_size=3, stride=1, padding=1), kernel_size=3, stride=1, padding=1)
+        # Update S
+        S = S + (1 - S) * F.relu(mask - I_prime)
+
+    return S
 
 
 def skeletonize_mask(mask):

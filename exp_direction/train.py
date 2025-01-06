@@ -15,6 +15,7 @@ import dataloader.drive_loader as drive
 from models.fr_unet import Anisotropic_Diffusion as Model
 from evaluate import evaluate
 from loss import *
+from skeleton import soft_skeleton
 
 def setup(rank, world_size):
     """DDPの初期設定"""
@@ -102,18 +103,18 @@ def train_one_epoch(args, model, dataloader, criterion, optimizer, device, world
 
     for i, sample in enumerate(dataloader):
         images = sample['transformed_image'].to(device)
-        targets = sample['transformed_mask'].to(device)
+        masks = sample['transformed_mask'].to(device)
 
-        main_out, s_long, s_short, v_long = model(images)
-        # loss = criterion(main_out, targets)
+        preds, s_long, s_short, v_long = model(images)
+        soft_skeleton_pred = soft_skeleton(preds)
+        soft_skeleton_gt = soft_skeleton(masks)
         
         # 個別の損失を計算
-        loss_mask = BCELoss()(main_out, sample['transformed_mask'].to(device))
-        loss_center = BCELoss()(main_out, sample['skeleton'].to(device))
+        loss_main = Loss()(preds, masks, soft_skeleton_pred, soft_skeleton_gt, alpha=args.alpha)
         loss_cosine = CosineLoss()(v_long, sample['vessel_directions'].to(device))
-        loss_anisotropic = AnisotropicLoss()(s_long, s_short, sample['transformed_mask'].to(device)) 
+        loss_anisotropic = AnisotropicLoss()(s_long, s_short, masks) 
         
-        loss = args.lambda_mask * loss_mask + args.lambda_center * loss_center + args.lambda_cosine * loss_cosine + args.lambda_anisotropic * loss_anisotropic
+        loss = args.lambda_main * loss_main + args.lambda_cosine * loss_cosine + args.lambda_anisotropic * loss_anisotropic
         
         # 勾配を計算して累積
         loss.backward()
@@ -242,7 +243,7 @@ def train(args, writer=None):
             writer.add_scalar('Loss/train', train_loss, epoch)
         
         if epoch % args.val_interval == args.val_interval - 1:
-            val_loss, acc, sen, spe, iou, miou, dice, center_dice = evaluate(model, valloader, criterion, epoch, args, device)
+            val_loss, acc, sen, spe, iou, miou, dice, cl_dice = evaluate(model, valloader, criterion, epoch, args, device)
             if args.rank == 0:
                 writer.add_scalar('Loss/val', val_loss, epoch)
                 writer.add_scalar('Accuracy', acc, epoch)
@@ -251,7 +252,7 @@ def train(args, writer=None):
                 writer.add_scalar('IoU', iou, epoch)
                 writer.add_scalar('MIoU', miou, epoch)
                 writer.add_scalar('Dice', dice, epoch)
-                writer.add_scalar('Centerline Dice', center_dice, epoch)
+                writer.add_scalar('CL Dice', cl_dice, epoch)
                 
                 if val_loss < best_info['val_loss']:
                     best_info['epoch'] = epoch

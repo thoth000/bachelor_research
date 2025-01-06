@@ -14,6 +14,8 @@ from models.fr_unet import Anisotropic_Diffusion as Model
 from models.lse import select_pde
 import dataloader.drive_loader as drive
 
+from skeleton import soft_skeleton
+
 def setup(rank, world_size):
     """DDPの初期設定"""
     dist.init_process_group("nccl", rank=rank, world_size=world_size)
@@ -71,46 +73,73 @@ def check_args():
 def test_predict(model, dataloader, args, device):
     model.eval()
     
+    total_samples = torch.tensor(0.0, device=device)
     total_tp = torch.tensor(0.0, device=device)
     total_tn = torch.tensor(0.0, device=device)
     total_fp = torch.tensor(0.0, device=device)
     total_fn = torch.tensor(0.0, device=device)
+    total_dice = torch.tensor(0.0, device=device)
+    total_cldice = torch.tensor(0.0, device=device)
     
     tbar = tqdm(enumerate(dataloader), total=len(dataloader), ncols=80) if args.rank == 0 else enumerate(dataloader)
     
     with torch.no_grad():
         for i, sample in tbar:
-            images = sample['transformed_image'].to(device)
             
-            main_out, s_long, s_short, v_long = model(images)
+            images = sample['transformed_image'].to(device)
             masks = sample['mask']
+            total_samples += images.size(0)  # バッチ内のサンプル数を加算
+            
+            preds, s_long, s_short, v_long = model(images)
             original_size = masks.shape[2:]
-            main_out_resized = F.interpolate(main_out, size=original_size, mode='bilinear', align_corners=False).cpu()
+            preds_resized = F.interpolate(preds, size=original_size, mode='bilinear', align_corners=False).cpu()
             
             # origin evaluation
-            preds = (main_out_resized > args.threshold).float()
-            total_tp += torch.sum((preds == 1) & (masks == 1)).item()
-            total_tn += torch.sum((preds == 0) & (masks == 0)).item()
-            total_fp += torch.sum((preds == 1) & (masks == 0)).item()
-            total_fn += torch.sum((preds == 0) & (masks == 1)).item()
+            masks_pred = (preds_resized > args.threshold).float()
             
-            if args.rank == 0 and args.save_mask and i < 5:
-                save_scalar_field_as_image(main_out_resized[0, 0], os.path.join(args.save_dir, f'{i+1}_origin.png'))
+            tp = torch.sum((masks_pred == 1) & (masks == 1)).item()
+            tn = torch.sum((masks_pred == 0) & (masks == 0)).item()
+            fp = torch.sum((masks_pred == 1) & (masks == 0)).item()
+            fn = torch.sum((masks_pred == 0) & (masks == 1)).item()
+            
+            total_tp += tp
+            total_tn += tn
+            total_fp += fp
+            total_fn += fn
+            
+            # dice
+            dice = (2 * tp) / (2 * tp + fp + fn) if (2 * tp + fp + fn) > 0 else torch.tensor(0.0, device=device)
+            total_dice += dice
+            
+            # cldice
+            soft_skeleton_pred = soft_skeleton(masks_pred)
+            soft_skeleton_gt = soft_skeleton(masks)
+            tprec = (torch.sum(soft_skeleton_pred * masks) + 1) / (torch.sum(soft_skeleton_pred) + 1)
+            tsens = (torch.sum(soft_skeleton_gt * masks_pred) + 1) / (torch.sum(soft_skeleton_gt) + 1)
+            cl_dice = (2 * tprec * tsens) / (tprec + tsens)
+            total_cl_dice += cl_dice
+            
+            if args.rank == 0 and args.save_mask and i < 3:
+                save_scalar_field_as_image(masks_pred[0, 0], os.path.join(args.save_dir, f'{i+1}_origin.png'))
                 save_scalar_field_as_image(preds[0, 0], os.path.join(args.save_dir, f'{i+1}_binary.png'))
     
+    dist.all_reduce(total_samples, op=dist.ReduceOp.SUM)
     dist.all_reduce(total_tp, op=dist.ReduceOp.SUM)
     dist.all_reduce(total_tn, op=dist.ReduceOp.SUM)
     dist.all_reduce(total_fp, op=dist.ReduceOp.SUM)
     dist.all_reduce(total_fn, op=dist.ReduceOp.SUM)
+    dist.all_reduce(total_dice, op=dist.ReduceOp.SUM)
+    dist.all_reduce(total_dice, op=dist.ReduceOp.SUM)
     
     acc = (total_tp + total_tn) / (total_tp + total_tn + total_fp + total_fn)
     sen = total_tp / (total_tp + total_fn) if (total_tp + total_fn) > 0 else torch.tensor(0.0, device=device)
     spe = total_tn / (total_tn + total_fp) if (total_tn + total_fp) > 0 else torch.tensor(0.0, device=device)
     iou = total_tp / (total_tp + total_fp + total_fn) if (total_tp + total_fp + total_fn) > 0 else torch.tensor(0.0, device=device)
     miou = ((total_tp / (total_tp + total_fp + total_fn)) + (total_tn / (total_tn + total_fp + total_fn))) / 2
-    dice = (2 * total_tp) / (2 * total_tp + total_fp + total_fn) if (2 * total_tp + total_fp + total_fn) > 0 else torch.tensor(0.0, device=device)
+    dice = total_dice / total_samples
+    cl_dice = total_cl_dice / total_samples
 
-    return acc.item(), sen.item(), spe.item(), iou.item(), miou.item(), dice.item()
+    return acc.item(), sen.item(), spe.item(), iou.item(), miou.item(), dice.item(), cl_dice.item()
 
 def test(args):
     device = torch.device(f'cuda:{args.rank}')
@@ -127,9 +156,9 @@ def test(args):
     checkpoint = torch.load(args.pretrained_path, map_location=device, weights_only=False)
     model.load_state_dict(checkpoint['state_dict'])
     
-    acc, sen, spe, iou, miou, dice= test_predict(model, testloader, args, device)
+    acc, sen, spe, iou, miou, dice, cl_dice = test_predict(model, testloader, args, device)
     
-    return acc, sen, spe, iou, miou, dice
+    return acc, sen, spe, iou, miou, dice, cl_dice
 
 
 def visualize_and_save_scalar_field(scalar_field, output_path, cmap="gray"):
@@ -171,7 +200,7 @@ def main():
     args.rank = int(os.environ['RANK'])
     args.world_size = int(os.environ['WORLD_SIZE'])
     setup(args.rank, args.world_size)
-    acc, sen, spe, iou, miou, dice = test(args)
+    acc, sen, spe, iou, miou, dice, cl_dice = test(args)
     # args.save_dirにmetricsを保存
     with open(os.path.join(args.save_dir, 'metrics.txt'), 'w') as f:
         f.write(f'Accuracy: {acc}\n')
@@ -180,6 +209,7 @@ def main():
         f.write(f'IoU: {iou}\n')
         f.write(f'MIoU: {miou}\n')
         f.write(f'Dice: {dice}\n')
+        f.write(f'ClDice: {cl_dice}\n')
     
     cleanup()
 

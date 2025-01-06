@@ -19,12 +19,8 @@ def evaluate(model, dataloader, criterion, epoch, args, device):
     total_tn = torch.tensor(0.0, device=device)
     total_fp = torch.tensor(0.0, device=device)
     total_fn = torch.tensor(0.0, device=device)
-    
-    # for centerline
-    center_tp = torch.tensor(0.0, device=device)
-    center_tn = torch.tensor(0.0, device=device)
-    center_fp = torch.tensor(0.0, device=device)
-    center_fn = torch.tensor(0.0, device=device)
+    total_dice = torch.tensor(0.0, device=device)
+    total_cldice= torch.tensor(0.0, device=device)
     
     if args.save_mask or epoch == args.max_epoch - 1:
         # ディレクトリ生成
@@ -34,48 +30,60 @@ def evaluate(model, dataloader, criterion, epoch, args, device):
     with torch.no_grad():
         for i, sample in enumerate(dataloader):
             images = sample['transformed_image'].to(device)
-            targets = sample['transformed_mask'].to(device)
+            masks = sample['transformed_mask'].to(device)
             
-            main_out, s_long, s_short, v_long = model(images)
+            preds, s_long, s_short, v_long = model(images)
+            soft_skeleton_pred = soft_skeleton(preds)
+            soft_skeleton_gt = soft_skeleton(masks)
+        
             # 個別の損失を計算
-            loss_mask = BCELoss()(main_out, sample['transformed_mask'].to(device))
-            loss_center = BCELoss()(main_out, sample['skeleton'].to(device))
+            loss_main = Loss()(preds, masks, soft_skeleton_pred, soft_skeleton_gt, alpha=args.alpha)
             loss_cosine = CosineLoss()(v_long, sample['vessel_directions'].to(device))
-            loss_anisotropic = AnisotropicLoss()(s_long, s_short, sample['transformed_mask'].to(device)) 
-            
-            loss = args.lambda_mask * loss_mask + args.lambda_center * loss_center + args.lambda_cosine * loss_cosine + args.lambda_anisotropic * loss_anisotropic
-            
+            loss_anisotropic = AnisotropicLoss()(s_long, s_short, masks) 
+        
+            loss = args.lambda_main * loss_main + args.lambda_cosine * loss_cosine + args.lambda_anisotropic * loss_anisotropic
+        
             running_loss += loss * images.size(0) # バッチ内のサンプル数で加重
             total_samples += images.size(0)  # バッチ内のサンプル数を加算
             
             # 評価
             masks = sample['mask'].to(device) # 元サイズのマスク
             mask_size = masks.shape[2:]
-            main_out_resized = F.interpolate(main_out, size=mask_size, mode='bilinear')
+            preds_resized = F.interpolate(preds, size=mask_size, mode='bilinear')
             if args.rank == 0 and (args.save_mask or epoch == args.max_epoch - 1):
-                save_main_out_image(main_out_resized, os.path.join(out_dir, f"{i}.png"))
-                save_main_out_image(main_out_resized > args.threshold, os.path.join(out_dir, f"{i}_binary.png"), cmap="gray")
+                save_main_out_image(preds_resized, os.path.join(out_dir, f"{i}.png"))
+                save_main_out_image(preds_resized > args.threshold, os.path.join(out_dir, f"{i}_binary.png"), cmap="gray")
                 save_main_out_image(s_long, os.path.join(out_dir, f"{i}_lambda_long.png"))
                 save_main_out_image(s_short, os.path.join(out_dir, f"{i}_lambda_short.png"))
-                visualize_vector_field_with_image(v_long, images, os.path.join(out_dir, f"{i}_v_long.png"), step=10, scale=0.1)
+                visualize_vector_field_with_image(v_long, images, os.path.join(out_dir, f"{i}_v_long.png"), step=5, scale=0.1)
                 
             # モデル出力が確率場解釈なので閾値で直接バイナリ化
-            preds = (main_out_resized > args.threshold).float()
+            masks_pred = (preds_resized > args.threshold).float()
             # 元画像サイズにする
-            preds = unpad_to_original(preds, sample["padding"])
+            masks_pred = unpad_to_original(masks_pred, sample["padding"])
             masks = unpad_to_original(masks, sample["padding"])
             
             # tp, tn, fp, fn
-            total_tp += torch.sum((preds == 1) & (masks == 1)).item()
-            total_tn += torch.sum((preds == 0) & (masks == 0)).item()
-            total_fp += torch.sum((preds == 1) & (masks == 0)).item()
-            total_fn += torch.sum((preds == 0) & (masks == 1)).item()
+            tp = torch.sum((masks_pred == 1) & (masks == 1)).item()
+            tn = torch.sum((masks_pred == 0) & (masks == 0)).item()
+            fp = torch.sum((masks_pred == 1) & (masks == 0)).item()
+            fn = torch.sum((masks_pred == 0) & (masks == 1)).item()
             
-            # centerline
-            center_tp += torch.sum((preds == 1) & (sample['skeleton'].to(device) == 1)).item()
-            center_tn += torch.sum((preds == 0) & (sample['skeleton'].to(device) == 0)).item()
-            center_fp += torch.sum((preds == 1) & (sample['skeleton'].to(device) == 0)).item()
-            center_fn += torch.sum((preds == 0) & (sample['skeleton'].to(device) == 1)).item()
+            total_tp += tp
+            total_tn += tn
+            total_fp += fp
+            total_fn += fn
+            # dice
+            dice = (2 * tp) / (2 * tp + fp + fn) if (2 * tp + fp + fn) != 0 else 0
+            total_dice += dice
+            
+            # cl dice
+            soft_skeleton_pred = soft_skeleton(masks_pred)
+            soft_skeleton_gt = soft_skeleton(masks)
+            tprec = (torch.sum(soft_skeleton_pred * masks) + 1) / (torch.sum(soft_skeleton_pred) + 1)
+            tsens = (torch.sum(soft_skeleton_gt * masks_pred) + 1) / (torch.sum(soft_skeleton_gt) + 1)
+            cl_dice = (2 * tprec * tsens) / (tprec + tsens)
+            total_cl_dice += cl_dice
             
     # 集計
     dist.all_reduce(running_loss, op=dist.ReduceOp.SUM)
@@ -84,11 +92,8 @@ def evaluate(model, dataloader, criterion, epoch, args, device):
     dist.all_reduce(total_tn, op=dist.ReduceOp.SUM)
     dist.all_reduce(total_fp, op=dist.ReduceOp.SUM)
     dist.all_reduce(total_fn, op=dist.ReduceOp.SUM)
-    
-    dist.all_reduce(center_tp, op=dist.ReduceOp.SUM)
-    dist.all_reduce(center_tn, op=dist.ReduceOp.SUM)
-    dist.all_reduce(center_fp, op=dist.ReduceOp.SUM)
-    dist.all_reduce(center_fn, op=dist.ReduceOp.SUM)
+    dist.all_reduce(total_dice, op=dist.ReduceOp.SUM)
+    dist.all_reduce(total_cl_dice, op=dist.ReduceOp.SUM)
     
     avg_loss = running_loss / total_samples
     acc = (total_tp + total_tn) / (total_tp + total_tn + total_fp + total_fn)
@@ -96,11 +101,10 @@ def evaluate(model, dataloader, criterion, epoch, args, device):
     spe = total_tn / (total_tn + total_fp)
     iou = total_tp / (total_tp + total_fp + total_fn)
     miou = ((total_tp / (total_tp + total_fp + total_fn)) + (total_tn / (total_tn + total_fp + total_fn))) / 2
-    dice = (2 * total_tp) / (2 * total_tp + total_fp + total_fn) # F1
+    dice = total_dice / total_samples
+    cl_dice = total_cl_dice / total_samples
     
-    
-    
-    return avg_loss.item(), acc.item(), sen.item(), spe.item(), iou.item(), miou.item(), dice.item(), dice_center.item()
+    return avg_loss.item(), acc.item(), sen.item(), spe.item(), iou.item(), miou.item(), dice.item(), cl_dice.item()
 
 
 def save_main_out_image(output_tensor, filepath, cmap="viridis"):

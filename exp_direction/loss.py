@@ -103,3 +103,30 @@ class GeneralizedDiceLoss(torch.nn.Module):
         cardinality = (preds**2).sum(dim=1) + (targets**2).sum(dim=1)
         dice = 1 - 2 * intersection / (cardinality + smooth)
         return dice.mean()
+
+
+class Loss(torch.nn.Module):
+    def forward(self, preds, masks_gt, soft_skeleton_pred, soft_skeleton_gt, alpha=0.5):
+        # バッチ次元を保持し、他の次元をフラット化
+        batch_size = masks_gt.size(0)
+        preds = preds.view(batch_size, -1)
+        masks_gt = masks_gt.view(batch_size, -1)
+        soft_skeleton_pred = soft_skeleton_pred.view(batch_size, -1)
+        soft_skeleton_gt = soft_skeleton_gt.view(batch_size, -1)
+
+        # soft dice loss (バッチ次元ごとに計算)
+        dice_loss = 1 - (2 * torch.sum(masks_gt * preds, dim=1) + 1) / \
+                    (torch.sum(masks_gt, dim=1) + torch.sum(preds, dim=1) + 1)
+
+        # soft cl dice loss (バッチ次元ごとに計算)
+        tprec = (torch.sum(soft_skeleton_pred * masks_gt, dim=1) + 1) / \
+                (torch.sum(soft_skeleton_pred, dim=1) + 1)
+        tsens = (torch.sum(soft_skeleton_gt * preds, dim=1) + 1) / \
+                (torch.sum(soft_skeleton_gt, dim=1) + 1)
+        cl_dice_loss = 1 - (2 * tprec * tsens) / (tprec + tsens)
+
+        # バッチ次元ごとに損失を組み合わせ
+        loss = (1 - alpha) * dice_loss + alpha * cl_dice_loss
+
+        # バッチ全体の損失を平均化
+        return loss.mean()
