@@ -42,7 +42,7 @@ LAMBDA_MAIN=1.0
 LAMBDA_COSINE=0
 LAMBDA_ANISOTROPIC=0
 
-EXP_NAME="BCE_${ALPHA}_${LAMBDA_MAIN}_${LAMBDA_COSINE}_${LAMBDA_ANISOTROPIC}"
+EXP_NAME="${ALPHA}_${LAMBDA_MAIN}_${LAMBDA_COSINE}_${LAMBDA_ANISOTROPIC}"
 
 # PyTorch DDPでトレーニングを実行
 torchrun --nproc_per_node=$NUM_GPUS --nnodes=1 --node_rank=0 --master_port=$MASTER_PORT main.py \
@@ -73,7 +73,7 @@ torchrun --nproc_per_node=$NUM_GPUS --nnodes=1 --node_rank=0 --master_port=$MAST
     --lambda_anisotropic $LAMBDA_ANISOTROPIC
 
 ALPHA=0.1
-EXP_NAME="BCE_${ALPHA}_${LAMBDA_MAIN}_${LAMBDA_COSINE}_${LAMBDA_ANISOTROPIC}"
+EXP_NAME="${ALPHA}_${LAMBDA_MAIN}_${LAMBDA_COSINE}_${LAMBDA_ANISOTROPIC}"
 torchrun --nproc_per_node=$NUM_GPUS --nnodes=1 --node_rank=0 --master_port=$MASTER_PORT main.py \
     --model_name $MODEL_NAME \
     --max_epoch $MAX_EPOCH \
@@ -102,7 +102,7 @@ torchrun --nproc_per_node=$NUM_GPUS --nnodes=1 --node_rank=0 --master_port=$MAST
     --lambda_anisotropic $LAMBDA_ANISOTROPIC
 
 ALPHA=0.2
-EXP_NAME="BCE_${ALPHA}_${LAMBDA_MAIN}_${LAMBDA_COSINE}_${LAMBDA_ANISOTROPIC}"
+EXP_NAME="${ALPHA}_${LAMBDA_MAIN}_${LAMBDA_COSINE}_${LAMBDA_ANISOTROPIC}"
 torchrun --nproc_per_node=$NUM_GPUS --nnodes=1 --node_rank=0 --master_port=$MASTER_PORT main.py \
     --model_name $MODEL_NAME \
     --max_epoch $MAX_EPOCH \

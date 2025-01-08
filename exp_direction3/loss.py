@@ -67,7 +67,9 @@ class TverskyLoss(torch.nn.Module):
 
 class CosineLoss(torch.nn.Module):
     def forward(self, preds, targets):
-        # already normalized        
+        preds = F.normalize(preds, p=2, dim=1)
+        targets = F.normalize(targets, p=2, dim=1)
+        
         dot_product = (preds * targets).sum(dim=1)
         loss = 1 - dot_product
         return loss.mean()
