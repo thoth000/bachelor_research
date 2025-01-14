@@ -17,6 +17,8 @@ from models.fr_unet import FR_UNet as Model
 from evaluate import evaluate
 from loss import *
 
+import copy
+
 def setup(rank, world_size):
     """DDPの初期設定"""
     dist.init_process_group("nccl", rank=rank, world_size=world_size, timeout=datetime.timedelta(minutes=2))
@@ -108,67 +110,33 @@ def minpool(input, kernel_size=3, stride=1, padding=1):
     return F.max_pool2d(input*-1, kernel_size, stride, padding)*-1 # 最大プーリングを適用して再度反転
 
 
-def soft_skeleton(mask, k=30):
-    """
-    ソフトスケルトン変換
-    Args:
-        mask (torch.Tensor): マスク画像 (N, 1, H, W)
-        k (int): 最大管幅
-    Returns:
-        torch.Tensor: ソフトスケルトン画像 (N, 1, H, W)
-    """
-    # Initialize I' as maxpool(minpool(mask))
-    I_prime = F.max_pool2d(minpool(mask, kernel_size=3, stride=1, padding=1), kernel_size=3, stride=1, padding=1)
-    # Initialize S as ReLU(I - I')
-    S = F.relu(mask - I_prime)
-
-    # Iterative refinement of the skeleton
-    for _ in range(k):
-        # Update I
-        mask = minpool(mask, kernel_size=3, stride=1, padding=1)
-        # Update I'
-        I_prime = F.max_pool2d(minpool(mask, kernel_size=3, stride=1, padding=1), kernel_size=3, stride=1, padding=1)
-        # Update S
-        S = S + (1 - S) * F.relu(mask - I_prime)
-
-    return S
-
-
-class Loss(torch.nn.Module):
-    def forward(self, preds, masks_gt, soft_skeleton_pred, soft_skeleton_gt, alpha=0.5):
-        # バッチ次元を保持し、他の次元をフラット化
-        batch_size = masks_gt.size(0)
-        preds = preds.view(batch_size, -1)
-        masks_gt = masks_gt.view(batch_size, -1)
-        soft_skeleton_pred = soft_skeleton_pred.view(batch_size, -1)
-        soft_skeleton_gt = soft_skeleton_gt.view(batch_size, -1)
-
-        # soft dice loss (バッチ次元ごとに計算)
-        dice_loss = 1 - (2 * torch.sum(masks_gt * preds, dim=1) + 1) / \
-                    (torch.sum(masks_gt, dim=1) + torch.sum(preds, dim=1) + 1)
-
-        # soft cl dice loss (バッチ次元ごとに計算)
-        tprec = (torch.sum(soft_skeleton_pred * masks_gt, dim=1) + 1) / \
-                (torch.sum(soft_skeleton_pred, dim=1) + 1)
-        tsens = (torch.sum(soft_skeleton_gt * preds, dim=1) + 1) / \
-                (torch.sum(soft_skeleton_gt, dim=1) + 1)
-        cl_dice_loss = 1 - (2 * tprec * tsens) / (tprec + tsens)
-
-        # バッチ次元ごとに損失を組み合わせ
-        loss = (1 - alpha) * dice_loss + alpha * cl_dice_loss
-
-        # バッチ全体の損失を平均化
-        return loss.mean()
+def soft_skeleton(x, thresh_width=30):
+    '''
+    Differenciable aproximation of morphological skelitonization operaton
+    thresh_width - maximal expected width of vessel
+    '''
+    for i in range(thresh_width):
+        min_pool_x = torch.nn.functional.max_pool2d(x*-1, (3, 3), 1, 1)*-1
+        contour = torch.nn.functional.relu(torch.nn.functional.max_pool2d(min_pool_x, (3, 3), 1, 1) - min_pool_x)
+        x = torch.nn.functional.relu(x - contour)
+    return x
 
 
 def train_one_epoch(args, model, dataloader, criterion, optimizer, device, world_size):
     model.train()
     train_loss = torch.tensor(0.0, device=device)  # train_lossをテンソルで初期化
 
+    num_sample = torch.tensor(0, device=device)  # サンプル数をテンソルで初期化
+
     optimizer.zero_grad()
-    for i, sample in enumerate(dataloader):
+    
+    tbar = tqdm(enumerate(dataloader), ncols=80, total=len(dataloader)) if args.rank == 0 else enumerate(dataloader)
+    
+    for i, sample in tbar:
         images = sample['transformed_image'].to(device)
         masks = sample['transformed_mask'].to(device)
+        
+        num_sample += images.size(0)  # サンプル数をカウント
         
         preds = model(images)
         preds = torch.sigmoid(preds)
@@ -176,8 +144,14 @@ def train_one_epoch(args, model, dataloader, criterion, optimizer, device, world
         soft_skeleton_gt = soft_skeleton(masks)
         
         # loss
-        loss = Loss()(preds, masks, soft_skeleton_pred, soft_skeleton_gt, alpha=args.alpha)
+        # loss = Loss()(preds, masks, soft_skeleton_pred, soft_skeleton_gt, alpha=args.alpha)
+        loss = torch.nn.BCELoss()(preds, masks)
         loss.backward()
+        
+        if num_sample.item() >= 64 / 4:
+            optimizer.step()
+            optimizer.zero_grad()
+            num_sample.zero_()
         
         train_loss += loss  # 累積
 
@@ -186,7 +160,7 @@ def train_one_epoch(args, model, dataloader, criterion, optimizer, device, world
         dist.all_reduce(train_loss, op=dist.ReduceOp.SUM)
         train_loss /= world_size  # プロセス数で割って平均化
 
-    optimizer.step()  # 勾配を適用
+    # optimizer.step()  # 勾配を適用
 
     avg_loss = train_loss.item() / len(dataloader)  # 最終的にスカラー化してからバッチ数で平均
     return avg_loss
@@ -198,8 +172,8 @@ def train(args, writer=None):
     transform_train = drive.get_transform(args, mode='training')
     transform_val = drive.get_transform(args, mode='val')
     
-    trainset = drive.DRIVEDataset("training", args.dataset_path, args.dataset_opt ,is_val = False, split=0.9, transform = transform_train)
-    valset = drive.DRIVEDataset("training", args.dataset_path, args.dataset_opt, is_val = True, split=0.9, transform = transform_val)
+    trainset = drive.DRIVEDataset("training", args.dataset_path, args.dataset_opt ,is_val = False, transform = transform_train)
+    valset = drive.DRIVEDataset("test", args.dataset_path, args.dataset_opt, is_val = True, transform = transform_val)
 
     # DistributedSamplerを使ってデータを分割
     train_sampler = DistributedSampler(trainset, num_replicas=args.world_size, rank=args.rank)
@@ -224,7 +198,7 @@ def train(args, writer=None):
     else:
         criterion = torch.nn.BCEWithLogitsLoss()
     
-    optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     
     if args.scheduler == 'cosine_annealing':
         scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.max_epoch, eta_min=args.eta_min)
@@ -234,7 +208,7 @@ def train(args, writer=None):
     # ベスト情報の初期化
     best_info = {
         'epoch': 0,
-        'val_loss': 10e10,
+        'Dice': 0,
         'state_dict': None
     }
     
@@ -263,10 +237,11 @@ def train(args, writer=None):
                 writer.add_scalar('Dice', dice, epoch)
                 writer.add_scalar('CL Dice', cl_dice, epoch)
                 
-                if val_loss < best_info['val_loss']:
+                if dice > best_info['Dice']:
+                    print(f"\nBest model found at epoch {epoch + 1}\n")
                     best_info['epoch'] = epoch
-                    best_info['val_loss'] = val_loss
-                    best_info['state_dict'] = model.state_dict()
+                    best_info['Dice'] = dice
+                    best_info['state_dict'] = copy.deepcopy(model.state_dict())
 
     # モデルの保存 (rank=0のみ)
     if args.rank == 0:

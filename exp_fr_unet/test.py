@@ -11,10 +11,12 @@ from models.fr_unet import FR_UNet as Model
 import dataloader.drive_loader as drive
 from tqdm import tqdm
 
+import time
+from datetime import timedelta
 
 def setup(rank, world_size):
     """DDPの初期設定"""
-    dist.init_process_group("nccl", rank=rank, world_size=world_size)
+    dist.init_process_group("nccl", rank=rank, world_size=world_size, timeout=timedelta(minutes=30))
     torch.cuda.set_device(rank)
 
 def cleanup():
@@ -67,31 +69,50 @@ def minpool(input, kernel_size=3, stride=1, padding=1):
     return 1 - F.max_pool2d(inverted_input, kernel_size, stride, padding) # 最大プーリングを適用して再度反転
 
 
-def soft_skeleton(mask, k=30):
-    """
-    ソフトスケルトン変換
-    Args:
-        mask (torch.Tensor): マスク画像 (N, 1, H, W)
-        k (int): 最大管幅
-    Returns:
-        torch.Tensor: ソフトスケルトン画像 (N, 1, H, W)
-    """
-    # Initialize I' as maxpool(minpool(mask))
-    I_prime = F.max_pool2d(minpool(mask, kernel_size=3, stride=1, padding=1), kernel_size=3, stride=1, padding=1)
-    # Initialize S as ReLU(I - I')
-    S = F.relu(mask - I_prime)
+def soft_skeleton(x, thresh_width=50):
+    '''
+    Differenciable aproximation of morphological skelitonization operaton
+    thresh_width - maximal expected width of vessel
+    '''
+    # print("proper soft_skeleton")
+    for i in range(thresh_width):
+        min_pool_x = torch.nn.functional.max_pool2d(x*-1, (3, 3), 1, 1)*-1
+        contour = torch.nn.functional.relu(torch.nn.functional.max_pool2d(min_pool_x, (3, 3), 1, 1) - min_pool_x)
+        x = torch.nn.functional.relu(x - contour)
+    return x
 
-    # Iterative refinement of the skeleton
-    for _ in range(k):
-        # Update I
-        mask = minpool(mask, kernel_size=3, stride=1, padding=1)
-        # Update I'
-        I_prime = F.max_pool2d(minpool(mask, kernel_size=3, stride=1, padding=1), kernel_size=3, stride=1, padding=1)
-        # Update S
-        S = S + (1 - S) * F.relu(mask - I_prime)
 
-    return S
+def dti(preds, thresh_low=0.3, thresh_high=0.5, max_iter=1000):
+    fixed_mask = (preds > thresh_high).float()
+    checkable_mask = (preds >= thresh_low).float()
+    new_fixed_mask = torch.zeros_like(fixed_mask)
+    count = 0
+    while not torch.equal(new_fixed_mask, fixed_mask):
+        count += 1
+        new_fixed_mask = fixed_mask.clone()
+        fixed_mask = F.max_pool2d(fixed_mask, 3, 1, 1) * checkable_mask
+    
+    return fixed_mask
 
+
+def dti_normal(preds, thresh_low=0.3, thresh_high=0.5, max_iter=1000):
+    h, w = preds.shape[2:]
+    bin = (preds > thresh_high).float()
+    gbin = bin.clone()
+    gbin_pre = torch.zeros_like(gbin)
+    count = 0
+    while not torch.equal(gbin_pre, gbin):
+        count += 1
+        gbin_pre = gbin.clone()
+        for i in range(h):
+            for j in range(w):
+                if not gbin[0, 0, i, j] and (preds[0, 0, i, j] < thresh_high) and (preds[0, 0, i, j] >= thresh_low):
+                    if gbin[0, 0, i-1, j-1] or gbin[0, 0, i-1, j] or gbin[0, 0, i-1, j+1] or gbin[0, 0, i, j-1] or gbin[0, 0, i, j+1] or gbin[0, 0, i+1, j-1] or gbin[0, 0, i+1, j] or gbin[0, 0, i+1, j+1]:
+                        gbin[0, 0, i, j] = 1.0
+    
+    print(count)
+    
+    return gbin
 
 def test_predict(model, dataloader, args, device):
     model.eval()
@@ -107,22 +128,38 @@ def test_predict(model, dataloader, args, device):
     total_dice = torch.tensor(0.0, device=device)
     total_cl_dice = torch.tensor(0.0, device=device)
     
+    total_time = torch.tensor(0.0, device=device)
+    
     with torch.no_grad():
+        tbar = tqdm(enumerate(dataloader), total=len(dataloader)) if args.rank == 0 else enumerate(dataloader)
+        
         for i, sample in tqdm(enumerate(dataloader), total=len(dataloader)):
+            dist.barrier() # 同期
             images = sample['transformed_image'].to(device)
-            masks = sample['mask']
+            masks = sample['mask'].to(device)
             original_size = masks.shape[2:]
             main_out = model(images)
-            main_out_resized = F.interpolate(main_out, size=original_size, mode='bilinear', align_corners=False).cpu()
-            preds = (torch.sigmoid(main_out_resized) > args.threshold).float()
+            main_out_resized = F.interpolate(main_out, size=original_size, mode='bilinear', align_corners=False)
+            preds = torch.sigmoid(main_out_resized) # [B, 1, H, W]
+            masks_pred = (preds > args.threshold).float()
             
-            soft_skeleton_pred = soft_skeleton(preds)
+            start = time.time()
+            
+            masks_dti = dti(preds, thresh_low=0.3, thresh_high=0.5)
+            
+            end = time.time()
+            
+            total_time += torch.tensor(end - start, device=device)
+            
+            masks_eval = masks_pred
+            
+            soft_skeleton_pred = soft_skeleton(masks_eval)
             soft_skeleton_gt = soft_skeleton(masks)
             
-            tp = torch.sum((preds == 1) & (masks == 1)).item()
-            tn = torch.sum((preds == 0) & (masks == 0)).item()
-            fp = torch.sum((preds == 1) & (masks == 0)).item()
-            fn = torch.sum((preds == 0) & (masks == 1)).item()
+            tp = torch.sum((masks_eval == 1) & (masks == 1)).item()
+            tn = torch.sum((masks_eval == 0) & (masks == 0)).item()
+            fp = torch.sum((masks_eval == 1) & (masks == 0)).item()
+            fn = torch.sum((masks_eval == 0) & (masks == 1)).item()
             
             total_tp += tp
             total_tn += tn
@@ -133,17 +170,23 @@ def test_predict(model, dataloader, args, device):
             total_dice += dice
             # cl dice
             tprec = (torch.sum(soft_skeleton_pred * masks) + 1) / (torch.sum(soft_skeleton_pred) + 1)
-            tsens = (torch.sum(soft_skeleton_gt * preds) + 1) / (torch.sum(soft_skeleton_gt) + 1)
+            tsens = (torch.sum(soft_skeleton_gt * masks_eval) + 1) / (torch.sum(soft_skeleton_gt) + 1)
             cl_dice = (2 * tprec * tsens) / (tprec + tsens)
             total_cl_dice += cl_dice
             
             total_samples += images.size(0)
             
-            preds = preds.squeeze().numpy()
-            preds = (preds * 255).astype(np.uint8)
-            
-            pred_image = Image.fromarray(preds)
-            pred_image.save(os.path.join(out_dir, f'{i+1}.png'))
+            if args.rank==0 and i == 0:
+                masks_pred = masks_pred.squeeze().cpu().numpy()
+                masks_pred = (masks_pred * 255).astype(np.uint8)
+                pred_image = Image.fromarray(masks_pred)
+                pred_image.save(os.path.join(out_dir, f'{i+1}.png'))
+                
+                masks_dti = masks_dti.squeeze().cpu().numpy()
+                masks_dti = (masks_dti * 255).astype(np.uint8)
+                dti_image = Image.fromarray(masks_dti)
+                dti_image.save(os.path.join(out_dir, f'dti_{i+1}.png'))
+
     
     dist.all_reduce(total_samples, op=dist.ReduceOp.SUM)
     dist.all_reduce(total_tp, op=dist.ReduceOp.SUM)
@@ -152,6 +195,7 @@ def test_predict(model, dataloader, args, device):
     dist.all_reduce(total_fn, op=dist.ReduceOp.SUM)
     dist.all_reduce(total_dice, op=dist.ReduceOp.SUM)
     dist.all_reduce(total_cl_dice, op=dist.ReduceOp.SUM)
+    dist.all_reduce(total_time, op=dist.ReduceOp.SUM)
     
     acc = (total_tp + total_tn) / (total_tp + total_tn + total_fp + total_fn)
     sen = total_tp / (total_tp + total_fn) if (total_tp + total_fn) > 0 else torch.tensor(0.0, device=device)
@@ -161,13 +205,16 @@ def test_predict(model, dataloader, args, device):
     dice = total_dice / total_samples
     cl_dice = total_cl_dice / total_samples
 
+    ave_time = total_time / total_samples
+    print(ave_time.item())
+
     return acc.item(), sen.item(), spe.item(), iou.item(), miou.item(), dice.item(), cl_dice.item()
 
 def test(args):
     device = torch.device(f'cuda:{args.rank}')
     
     transform_test = drive.get_transform(args, mode='test')
-    testset = drive.DRIVEDataset("training", args.dataset_path, args.dataset_opt, transform = transform_test)
+    testset = drive.DRIVEDataset("test", args.dataset_path, args.dataset_opt, transform = transform_test)
     
     test_sampler = DistributedSampler(testset, num_replicas=args.world_size, rank=args.rank, shuffle=False)
     testloader = DataLoader(testset, batch_size=1, sampler=test_sampler, num_workers=args.num_workers)
