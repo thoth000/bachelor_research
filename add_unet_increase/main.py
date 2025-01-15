@@ -63,6 +63,8 @@ def check_args():
     parser.add_argument('--dropout', type=float, default=0.2)
     parser.add_argument('--fuse', type=bool, default=True)
     parser.add_argument('--out_ave', type=bool, default=True)
+    parser.add_argument('--dropout_p', type=float, default=0.1)
+    parser.add_argument('--activation', type=str, default='elu')
     
     parser.add_argument('--num_iterations', type=int, default=100)
     parser.add_argument('--gamma', type=float, default=0.1)
@@ -70,7 +72,7 @@ def check_args():
     parser.add_argument('--pretrained_path', type=str, default='/home/sano/documents/exp_fr_unet_anisotropic/models/checkpoint-epoch40.pth')
     
     # lossのパラメータ
-    parser.add_argument('--alpha', type=float, default=0.5)
+    parser.add_argument('--alpha', type=float, default=0.2)
     
     # datasetのパス
     parser.dataset_path = parser.add_argument('--dataset_path', type=str, default="/home/sano/dataset/DRIVE")

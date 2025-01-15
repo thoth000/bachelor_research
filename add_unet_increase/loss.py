@@ -109,4 +109,4 @@ class Loss(torch.nn.Module):
         loss = (1 - alpha) * dice_loss + alpha * cl_dice_loss
 
         # バッチ全体の損失を平均化
-        return bce_loss.mean()
+        return loss.mean()

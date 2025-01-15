@@ -64,6 +64,17 @@ def unpad_to_original(output, padding):
     return unpadded_output
 
 
+def unpad_to_original_by_size(output, H=584, W=565):
+    # output : [B, C, H, W]
+    # TF.crop と同じ動作
+    _, _, h, w = output.size()
+    pad_top = (h - H) // 2
+    pad_bottom = h - H - pad_top
+    pad_left = (w - W) // 2
+    pad_right = w - W - pad_left
+    
+    return output[:, :, pad_top:h-pad_bottom, pad_left:w-pad_right]
+
 class StandardTransform:
     """すべての変換をまとめたクラス"""
     def __init__(self):

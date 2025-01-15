@@ -45,6 +45,8 @@ def check_args(mode='test'):
     parser.add_argument('--dropout', type=float, default=0.2)
     parser.add_argument('--fuse', type=bool, default=True)
     parser.add_argument('--out_ave', type=bool, default=True)
+    parser.add_argument('--dropout_p', type=float, default=0.1)
+    parser.add_argument('--activation', type=str, default='elu')
     
     parser.add_argument('--num_iterations', type=int, default=100)
     parser.add_argument('--gamma', type=float, default=0.1)
@@ -272,15 +274,18 @@ def test_predict(model, dataloader, args, device):
             main_out_resized = F.interpolate(main_out, size=original_size, mode='bilinear', align_corners=False)
             preds = torch.sigmoid(main_out_resized) # [B, 1, H, W]
             masks_pred = (preds > args.threshold).float()
-            preds_anisotropic = anisotropic_diffusion(preds, create_anisotropic_tensor_from_vector(vec), num_iterations=args.num_iterations, gamma=args.gamma)
+            preds_anisotropic = anisotropic_diffusion(preds.clone(), create_anisotropic_tensor_from_vector(vec), num_iterations=args.num_iterations, gamma=args.gamma)
             masks_anisotropic = (preds_anisotropic > args.threshold).float()
-            
-            masks_eval = masks_anisotropic
             
             masks_dti = dti(preds, thresh_low=0.3, thresh_high=0.5)
             
-            # masks_eval = masks_dti
+            masks_eval = masks_anisotropic
             
+            masks_eval = drive.unpad_to_original_by_size(masks_eval)
+            masks = drive.unpad_to_original_by_size(masks)
+            
+            # print(masks_eval.shape, masks.shape)
+                        
             soft_skeleton_pred = soft_skeleton(masks_eval)
             soft_skeleton_gt = soft_skeleton(masks)
             
@@ -305,6 +310,11 @@ def test_predict(model, dataloader, args, device):
             total_samples += images.size(0)
             
             if True:
+                masks_gt = masks.squeeze().cpu().numpy()
+                masks_gt = (masks_gt * 255).astype(np.uint8)
+                gt_image = Image.fromarray(masks_gt)
+                gt_image.save(os.path.join(out_dir, f'gt_{i+1}_{args.rank}.png'))
+                
                 masks_pred = masks_pred.squeeze().cpu().numpy()
                 masks_pred = (masks_pred * 255).astype(np.uint8)
                 pred_image = Image.fromarray(masks_pred)
@@ -321,9 +331,9 @@ def test_predict(model, dataloader, args, device):
                 masks_dti = masks_dti.squeeze().cpu().numpy()
                 masks_dti = (masks_dti * 255).astype(np.uint8)
                 dti_image = Image.fromarray(masks_dti)
-                # dti_image.save(os.path.join(out_dir, f'dti_{i+1}.png'))
+                dti_image.save(os.path.join(out_dir, f'dti_{i+1}_{args.rank}.png'))
 
-    
+
     dist.all_reduce(total_samples, op=dist.ReduceOp.SUM)
     dist.all_reduce(total_tp, op=dist.ReduceOp.SUM)
     dist.all_reduce(total_tn, op=dist.ReduceOp.SUM)

@@ -23,7 +23,6 @@ def minpool(input, kernel_size=3, stride=1, padding=1):
     """
     return F.max_pool2d(input*-1, kernel_size, stride, padding)*-1 # 最大プーリングを適用して再度反転
 
-
 def soft_skeleton(x, thresh_width=30):
     '''
     Differenciable aproximation of morphological skelitonization operaton
@@ -71,7 +70,6 @@ def create_anisotropic_tensor_from_vector(vectors, lambda1=1.0, lambda2=0.0):
 
     return D
 
-
 def gradient(scalar_field):
     """
     スカラー場の勾配を計算。
@@ -97,7 +95,6 @@ def gradient(scalar_field):
 
     return grad_x, grad_y
 
-
 def divergence(grad_x, grad_y):
     """
     ベクトル場の発散を計算。
@@ -122,7 +119,6 @@ def divergence(grad_x, grad_y):
     div_y = sum(coeff[i] * dy_pad[..., i:i+grad_y.size(-2), :] for i in range(9))
 
     return div_x + div_y
-
 
 def anisotropic_diffusion(preds, diffusion_tensor, num_iterations=10, gamma=0.1):
     """
@@ -162,34 +158,6 @@ def anisotropic_diffusion(preds, diffusion_tensor, num_iterations=10, gamma=0.1)
         preds = preds.clamp(0, 1)  # 0から1の範囲にクリップ
 
     return preds
-
-
-class Loss(torch.nn.Module):
-    def forward(self, preds, masks_gt, soft_skeleton_pred, soft_skeleton_gt, alpha=0.5):
-        # バッチ次元を保持し、他の次元をフラット化
-        batch_size = masks_gt.size(0)
-        preds = preds.view(batch_size, -1)
-        masks_gt = masks_gt.view(batch_size, -1)
-        soft_skeleton_pred = soft_skeleton_pred.view(batch_size, -1)
-        soft_skeleton_gt = soft_skeleton_gt.view(batch_size, -1)
-
-        # soft dice loss (バッチ次元ごとに計算)
-        dice_loss = 1 - (2 * torch.sum(masks_gt * preds, dim=1) + 1) / \
-                    (torch.sum(masks_gt, dim=1) + torch.sum(preds, dim=1) + 1)
-
-        # soft cl dice loss (バッチ次元ごとに計算)
-        tprec = (torch.sum(soft_skeleton_pred * masks_gt, dim=1) + 1) / \
-                (torch.sum(soft_skeleton_pred, dim=1) + 1)
-        tsens = (torch.sum(soft_skeleton_gt * preds, dim=1) + 1) / \
-                (torch.sum(soft_skeleton_gt, dim=1) + 1)
-        cl_dice_loss = 1 - (2 * tprec * tsens) / (tprec + tsens)
-
-        # バッチ次元ごとに損失を組み合わせ
-        loss = (1 - alpha) * dice_loss + alpha * cl_dice_loss
-
-        # バッチ全体の損失を平均化
-        return loss.mean()
-
 
 # loss, accuracy, IoU, Dice
 def evaluate(model, dataloader, criterion, epoch, args, device):
@@ -233,14 +201,17 @@ def evaluate(model, dataloader, criterion, epoch, args, device):
             masks = sample['mask'].to(device) # 元サイズのマスク
             
             preds_unpad = unpad_to_original(preds.clone(), sample["padding"])
+            preds_origin_unpad = unpad_to_original(preds_origin.clone(), sample["padding"])
             masks_unpad = unpad_to_original(masks.clone(), sample["padding"])
             masks_pred_unpad = (preds_unpad > args.threshold).float()
+            masks_origin_unpad = (preds_origin_unpad > args.threshold).float()
             soft_skeleton_pred = soft_skeleton(masks_pred_unpad.clone())
             soft_skeleton_gt = soft_skeleton(masks_unpad.clone())
             
             # save image
             if args.rank == 0 and args.save_mask and i == 0:
                 # masks
+                save_binary_image(masks_origin_unpad, os.path.join(out_dir, f"mask_origin_{i}.png"))
                 save_binary_image(masks_pred_unpad, os.path.join(out_dir, f"mask_pred_{i}.png"))
                 save_binary_image(masks_unpad, os.path.join(out_dir, f"mask_gt_{i}.png"))
                 # soft skeleton

@@ -50,11 +50,13 @@ def check_args(mode='train'):
     
     # モデル固有のパラメータ
     parser.add_argument('--num_classes', type=int, default=1)
-    parser.add_argument('--num_channels', type=int, default=3)
+    parser.add_argument('--num_channels', type=int, default=1)
     parser.add_argument('--feature_scale', type=int, default=2)
     parser.add_argument('--dropout', type=float, default=0.2)
     parser.add_argument('--fuse', type=bool, default=True)
     parser.add_argument('--out_ave', type=bool, default=True)
+    parser.add_argument('--dropout_p', type=float, default=0.1)
+    parser.add_argument('--activation', type=str, default='elu')
     
     
     args = parser.parse_args()

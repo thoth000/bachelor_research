@@ -14,8 +14,7 @@ export CUDA_VISIBLE_DEVICES=0,1,2,3
 NUM_GPUS=$(echo $CUDA_VISIBLE_DEVICES | awk -F',' '{print NF}')
 
 # モデル名
-MODEL_NAME="fr_unet"
-
+MODEL_NAME="unet"
 # トレーニング用引数の指定
 MAX_EPOCH=40
 BATCH_SIZE=4
@@ -35,11 +34,11 @@ DATASET="drive"
 TRANSFORM="fr_unet"
 DATASET_PATH="/home/sano/dataset/DRIVE"
 DATASET_OPT="512"
-PRETRAINED_PATH="/home/sano/documents/exp_unet_anisotropic/models/final_model.pth"
+PRETRAINED_PATH="/home/sano/documents/add_unet_increase/models/improved_unet.pth"
 
-ALPHA=1.0
+ALPHA=0.0
 
-EXP_NAME="_kernel11"
+EXP_NAME="kernel9_alpha${ALPHA}"
 
 # PyTorch DDPでトレーニングを実行
 torchrun --nproc_per_node=$NUM_GPUS --nnodes=1 --node_rank=0 --master_port=$MASTER_PORT main.py \
