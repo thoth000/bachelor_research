@@ -45,9 +45,8 @@ def check_args(mode='test'):
     parser.add_argument('--dropout', type=float, default=0.2)
     parser.add_argument('--fuse', type=bool, default=True)
     parser.add_argument('--out_ave', type=bool, default=True)
-    
-    parser.add_argument('--num_iterations', type=int, default=100)
-    parser.add_argument('--gamma', type=float, default=0.1)
+    parser.add_argument('--dropout_p', type=float, default=0.1)
+    parser.add_argument('--activation', type=str, default='elu')
     
     parser.add_argument('--dataset_path', type=str, default="/home/sano/dataset/DRIVE")
     parser.add_argument('--dataset_opt', type=str, default="pro")
@@ -84,132 +83,6 @@ def soft_skeleton(x, thresh_width=50):
         x = torch.nn.functional.relu(x - contour)
     return x
 
-def create_anisotropic_tensor_from_vector(vectors, lambda1=1.0, lambda2=0.0):
-    """
-    方向ベクトルに基づく異方性拡散テンソルを生成。
-
-    Parameters:
-        vectors (torch.Tensor): 方向ベクトル（形状: [B, 2, H, W]）。
-        lambda1 (float): 主方向の拡散強度。
-        lambda2 (float): 直交方向の拡散強度。
-
-    Returns:
-        D (torch.Tensor): 異方性拡散テンソル（形状: [B, 2, 2, H, W]）。
-    """
-    B, _, H, W = vectors.shape
-
-    # ベクトルを正規化
-    v_x = vectors[:, 0].unsqueeze(1)  # [B, 1, H, W]
-    v_y = vectors[:, 1].unsqueeze(1)  # [B, 1, H, W]
-    # print("v_x.shape", v_x.shape, "v_y.shape", v_y.shape)  # [64, 1, 128, 128]
-
-    # テンソル構築
-    # print("v_x * v_x", (v_x * v_x).shape)
-    # print("stack.shape", torch.stack([v_x * v_x, v_x * v_y], dim=1).shape)  # [64, 1, 128, 128]
-    
-    vvT = torch.zeros(B, 2, 2, H, W, device=vectors.device, dtype=vectors.dtype)  # [B, 2, 2, H, W]
-    vvT[:, 0, 0] = (v_x * v_x).squeeze(1)  # [B, H, W]
-    vvT[:, 0, 1] = (v_x * v_y).squeeze(1)  # [B, H, W]
-    vvT[:, 1, 0] = (v_y * v_x).squeeze(1)  # [B, H, W]
-    vvT[:, 1, 1] = (v_y * v_y).squeeze(1)  # [B, H, W]
-
-    # print("vvT.shape", vvT.shape)  # [64, 2, 2, 128, 128]
-
-    I = torch.eye(2, device=vectors.device).view(1, 2, 2, 1, 1)  # 単位行列
-    D = lambda1 * vvT + lambda2 * (I - vvT)
-
-    return D
-
-
-def gradient(scalar_field):
-    """
-    スカラー場の勾配を計算。
-
-    Parameters:
-        scalar_field (torch.Tensor): スカラー場（形状: [B, 1, H, W]）。
-
-    Returns:
-        grad_x (torch.Tensor): x方向の勾配（形状: [B, 1, H, W]）。
-        grad_y (torch.Tensor): y方向の勾配（形状: [B, 1, H, W]）。
-    """
-    # 有限差分係数（精度8次）
-    coeff = torch.tensor([-1/280, 4/105, -1/5, 4/5, 0, -4/5, 1/5, -4/105, 1/280],
-                         dtype=scalar_field.dtype, device=scalar_field.device)
-
-    # x方向の勾配計算
-    x_pad = F.pad(scalar_field, (4, 4, 0, 0), mode='replicate')
-    grad_x = sum(coeff[i] * x_pad[..., i:i+scalar_field.size(-1)] for i in range(9))
-
-    # y方向の勾配計算
-    y_pad = F.pad(scalar_field, (0, 0, 4, 4), mode='replicate')
-    grad_y = sum(coeff[i] * y_pad[..., i:i+scalar_field.size(-2), :] for i in range(9))
-
-    return grad_x, grad_y
-
-
-def divergence(grad_x, grad_y):
-    """
-    ベクトル場の発散を計算。
-
-    Parameters:
-        grad_x (torch.Tensor): x方向のベクトル場（形状: [B, 1, H, W]）。
-        grad_y (torch.Tensor): y方向のベクトル場（形状: [B, 1, H, W]）。
-
-    Returns:
-        divergence (torch.Tensor): 発散（形状: [B, 1, H, W]）。
-    """
-    # 有限差分係数（精度8次）
-    coeff = torch.tensor([-1/280, 4/105, -1/5, 4/5, 0, -4/5, 1/5, -4/105, 1/280],
-                         dtype=grad_x.dtype, device=grad_x.device)
-
-    # x方向の発散計算
-    dx_pad = F.pad(grad_x, (4, 4, 0, 0), mode='replicate')
-    div_x = sum(coeff[i] * dx_pad[..., i:i+grad_x.size(-1)] for i in range(9))
-
-    # y方向の発散計算
-    dy_pad = F.pad(grad_y, (0, 0, 4, 4), mode='replicate')
-    div_y = sum(coeff[i] * dy_pad[..., i:i+grad_y.size(-2), :] for i in range(9))
-
-    return div_x + div_y
-
-
-def anisotropic_diffusion(preds, diffusion_tensor, num_iterations=10, gamma=0.1):
-    """
-    異方性拡散プロセスを実行。
-
-    Parameters:
-        preds (torch.Tensor): スカラー場（形状: [B, 1, H, W]）。
-        diffusion_tensor (torch.Tensor): 異方性拡散テンソル（形状: [B, 2, 2, H, W]）。
-        num_iterations (int): 拡散の反復回数。
-        gamma (float): 拡散の強さ。
-
-    Returns:
-        preds (torch.Tensor): 拡散後のスカラー場（形状: [B, 1, H, W]）。
-    """
-    B, _, H, W = preds.shape
-
-    for _ in range(num_iterations):
-        # 勾配計算
-        grad_x, grad_y = gradient(preds)  # [B, 1, H, W]
-        grad = torch.cat([grad_x, grad_y], dim=1)  # [B, 2, H, W]
-        # print("grad.shape", grad.shape)  # [64, 2, 128, 128]
-
-        # print("diffusion_tensor.shape", diffusion_tensor.shape)  # [64, 2, 2, 128, 128]
-
-        # 勾配を異方性テンソルで変換
-        transformed_grad = torch.einsum('bijhw,bjhw->bihw', diffusion_tensor, grad)  # [B, 2, H, W]
-
-        # ダイバージェンス計算
-        div_x, div_y = transformed_grad[:, 0], transformed_grad[:, 1]
-        div = divergence(div_x.unsqueeze(1), div_y.unsqueeze(1))  # [B, 1, H, W]
-
-        div = F.relu(div)  # ダイバージェンスの正値部分のみを取得
-
-        # 拡散更新
-        preds = preds + gamma * div
-
-        preds = preds.clamp(0, 1)  # 0から1の範囲にクリップ
-    return preds
 
 def dti(preds, thresh_low=0.3, thresh_high=0.5, max_iter=1000):
     fixed_mask = (preds > thresh_high).float()
@@ -267,19 +140,20 @@ def test_predict(model, dataloader, args, device):
             images = sample['transformed_image'].to(device)
             masks = sample['mask'].to(device)
             original_size = masks.shape[2:]
-            main_out, vec = model(images)
-            vec = F.normalize(vec, p=2, dim=1)
+            main_out = model(images)
             main_out_resized = F.interpolate(main_out, size=original_size, mode='bilinear', align_corners=False)
             preds = torch.sigmoid(main_out_resized) # [B, 1, H, W]
             masks_pred = (preds > args.threshold).float()
-            preds_anisotropic = anisotropic_diffusion(preds, create_anisotropic_tensor_from_vector(vec), num_iterations=args.num_iterations, gamma=args.gamma)
-            masks_anisotropic = (preds_anisotropic > args.threshold).float()
             
-            masks_eval = masks_anisotropic
+            start = time.time()
             
             masks_dti = dti(preds, thresh_low=0.3, thresh_high=0.5)
             
-            # masks_eval = masks_dti
+            end = time.time()
+            
+            total_time += torch.tensor(end - start, device=device)
+            
+            masks_eval = masks_pred
             
             soft_skeleton_pred = soft_skeleton(masks_eval)
             soft_skeleton_gt = soft_skeleton(masks)
@@ -304,24 +178,16 @@ def test_predict(model, dataloader, args, device):
             
             total_samples += images.size(0)
             
-            if True:
+            if args.rank==0 and i == 0:
                 masks_pred = masks_pred.squeeze().cpu().numpy()
                 masks_pred = (masks_pred * 255).astype(np.uint8)
                 pred_image = Image.fromarray(masks_pred)
-                pred_image.save(os.path.join(out_dir, f'pred_{i+1}_{args.rank}.png'))
-                
-                masks_anisotropic = masks_anisotropic.squeeze().cpu().numpy()
-                masks_anisotropic = (masks_anisotropic * 255).astype(np.uint8)
-                anisotropic_image = Image.fromarray(masks_anisotropic)
-                anisotropic_image.save(os.path.join(out_dir, f'anisotropic_{i+1}_{args.rank}.png'))
-                
-                diff_image = Image.fromarray((masks_anisotropic - masks_pred).astype(np.uint8))
-                diff_image.save(os.path.join(out_dir, f'diff_{i+1}_{args.rank}.png'))
+                pred_image.save(os.path.join(out_dir, f'{i+1}.png'))
                 
                 masks_dti = masks_dti.squeeze().cpu().numpy()
                 masks_dti = (masks_dti * 255).astype(np.uint8)
                 dti_image = Image.fromarray(masks_dti)
-                # dti_image.save(os.path.join(out_dir, f'dti_{i+1}.png'))
+                dti_image.save(os.path.join(out_dir, f'dti_{i+1}.png'))
 
     
     dist.all_reduce(total_samples, op=dist.ReduceOp.SUM)

@@ -151,7 +151,7 @@ def test_predict(model, dataloader, args, device):
             
             total_time += torch.tensor(end - start, device=device)
             
-            masks_eval = masks_dti
+            masks_eval = masks_pred
             
             soft_skeleton_pred = soft_skeleton(masks_eval)
             soft_skeleton_gt = soft_skeleton(masks)

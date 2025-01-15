@@ -18,7 +18,7 @@ MODEL_NAME="fr_unet"
 
 # トレーニング用引数の指定
 MAX_EPOCH=40
-BATCH_SIZE=4
+BATCH_SIZE=512
 RESOLUTION=584
 LEARNING_RATE=1e-4
 ETA_MIN=0
@@ -34,12 +34,10 @@ NUM_WORKERS=4
 DATASET="drive"
 TRANSFORM="fr_unet"
 DATASET_PATH="/home/sano/dataset/DRIVE"
-DATASET_OPT="512"
-PRETRAINED_PATH="/home/sano/documents/exp_unet_anisotropic/models/final_model.pth"
+DATASET_OPT="48_FR-UNet"
+PRETRAINED_PATH="/home/sano/documents/delse_fr_unet_drive/models/fr_unet_base.pth"
 
 ALPHA=1.0
-
-EXP_NAME="_kernel11"
 
 # PyTorch DDPでトレーニングを実行
 torchrun --nproc_per_node=$NUM_GPUS --nnodes=1 --node_rank=0 --master_port=$MASTER_PORT main.py \
@@ -61,6 +59,4 @@ torchrun --nproc_per_node=$NUM_GPUS --nnodes=1 --node_rank=0 --master_port=$MAST
     --transform $TRANSFORM \
     --dataset_path $DATASET_PATH \
     --dataset_opt $DATASET_OPT \
-    --save_mask \
-    --pretrained_path $PRETRAINED_PATH \
-    --alpha $ALPHA
+    --save_mask

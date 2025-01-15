@@ -1,6 +1,5 @@
 import argparse
 import os
-import random
 import datetime
 from tqdm import tqdm
 import torch
@@ -63,11 +62,8 @@ def check_args():
     parser.add_argument('--dropout', type=float, default=0.2)
     parser.add_argument('--fuse', type=bool, default=True)
     parser.add_argument('--out_ave', type=bool, default=True)
-    
-    parser.add_argument('--num_iterations', type=int, default=100)
-    parser.add_argument('--gamma', type=float, default=0.1)
-    
-    parser.add_argument('--pretrained_path', type=str, default='/home/sano/documents/exp_fr_unet_anisotropic/models/checkpoint-epoch40.pth')
+    parser.add_argument('--dropout_p', type=float, default=0.1)
+    parser.add_argument('--activation', type=str, default='elu')
     
     # lossのパラメータ
     parser.add_argument('--alpha', type=float, default=0.5)
@@ -98,24 +94,11 @@ def save_args_to_file(args, filepath):
         for arg, value in vars(args).items():
             f.write(f'{arg}: {value}\n')
 
-
-def set_seed(seed: int):
-    os.environ['PYTHONHASHSEED'] = str(seed)
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)  # マルチGPU用
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
-
 def main():
     args = check_args()
     args.rank = int(os.environ['RANK'])
     args.world_size = int(os.environ['WORLD_SIZE'])
     setup(args.rank, args.world_size)
-    
-    set_seed(42)
 
     if args.rank == 0: # rank0のみtensorboardを使う
         writer = SummaryWriter(log_dir=args.save_dir)
