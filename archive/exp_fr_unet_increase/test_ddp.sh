@@ -17,7 +17,7 @@ THRESHOLD=0.5
 RESULT_DIR="result"
 DATASET_PATH="/home/sano/dataset/DRIVE"
 DATASET_OPT="pad"
-PRETRAINED_PATH="/home/sano/documents/exp_fr_unet/exp/exp_20250111_150927/final_model.pth"
+PRETRAINED_PATH="/home/sano/documents/exp_fr_unet_anisotropic/exp/exp_20250110_175159/final_model.pth"
 
 # 実行時間のタイムスタンプを取得
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")

@@ -163,6 +163,7 @@ class FR_UNet(nn.Module):
             filters[0], num_classes, kernel_size=1, padding=0, bias=True)
         self.fuse = nn.Conv2d(
             5, num_classes, kernel_size=1, padding=0, bias=True)
+        
         self.apply(InitWeights_He)
 
     def forward(self, x):
