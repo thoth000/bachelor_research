@@ -134,7 +134,7 @@ def data_process(data_path, name, patch_size, stride, mode):
 def get_square(img_list, name):
     img_s = []
     if name == "DRIVE":
-        shape = 592
+        shape = 592 # 592
     elif name == "CHASEDB1":
         shape = 1008
     elif name == "DCA1":

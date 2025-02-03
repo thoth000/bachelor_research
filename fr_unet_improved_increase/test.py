@@ -7,7 +7,7 @@ from PIL import Image
 import numpy as np
 import torch.distributed as dist
 from torch.utils.data import DataLoader, DistributedSampler
-from models.unet import UNet as Model
+from models.fr_unet import FR_UNet as Model
 import dataloader.drive_loader as drive
 from tqdm import tqdm
 
@@ -45,6 +45,8 @@ def check_args(mode='test'):
     parser.add_argument('--dropout', type=float, default=0.2)
     parser.add_argument('--fuse', type=bool, default=True)
     parser.add_argument('--out_ave', type=bool, default=True)
+    parser.add_argument('--dropout_p', type=float, default=0.1)
+    parser.add_argument('--activation', type=str, default='elu')
     
     parser.add_argument('--num_iterations', type=int, default=100)
     parser.add_argument('--gamma', type=float, default=0.1)
@@ -260,6 +262,7 @@ def count_connected_components(mask):
     labeled_array, num_features = ndi.label(mask_np, structure=np.ones((3, 3)))  # 8方向連結成分数を計算
     return num_features
 
+
 def test_predict(model, dataloader, args, device):
     model.eval()
     out_dir = 'result/predict'
@@ -290,15 +293,19 @@ def test_predict(model, dataloader, args, device):
             main_out_resized = F.interpolate(main_out, size=original_size, mode='bilinear', align_corners=False)
             preds = torch.sigmoid(main_out_resized) # [B, 1, H, W]
             masks_pred = (preds > args.threshold).float()
-            preds_anisotropic = anisotropic_diffusion(preds, create_anisotropic_tensor_from_vector(vec), num_iterations=args.num_iterations, gamma=args.gamma)
+            preds_anisotropic = anisotropic_diffusion(preds.clone(), create_anisotropic_tensor_from_vector(vec), num_iterations=args.num_iterations, gamma=args.gamma)
             masks_anisotropic = (preds_anisotropic > args.threshold).float()
             
+            masks_dti = dti(preds, thresh_low=0.3, thresh_high=0.5)
+            
+            # masks_eval = masks_anisotropic
             masks_eval = masks_anisotropic
             
-            masks_dti = dti(preds_anisotropic, thresh_low=0.3, thresh_high=0.5)
+            masks_eval = drive.unpad_to_original_by_size(masks_eval)
+            masks = drive.unpad_to_original_by_size(masks)
             
-            # masks_eval = masks_dti
-            
+            # print(masks_eval.shape, masks.shape)
+                        
             soft_skeleton_pred = soft_skeleton(masks_eval)
             soft_skeleton_gt = soft_skeleton(masks)
             
@@ -322,20 +329,21 @@ def test_predict(model, dataloader, args, device):
             # VCA
             num_components_gt = count_connected_components(masks)
             num_components_pred = count_connected_components(masks_eval)
-            # print(num_components_gt, num_components_pred)
+            print(num_components_gt, num_components_pred)
             vca = num_components_pred / num_components_gt if num_components_gt > 0 else 0
             total_vca += vca
             
             total_samples += images.size(0)
             
             if True:
-                # masked directions
-                save_masked_output_with_imsave(torch.abs(vec[:, 0:1]), masks, os.path.join(out_dir, f"masked_vec_x_{i+1}_{args.rank}.png"))
-                save_masked_output_with_imsave(torch.abs(vec[:, 1:2]), masks, os.path.join(out_dir, f"masked_vec_y_{i+1}_{args.rank}.png"))
+                image = images.squeeze().cpu().numpy()
+                image = (image * 255).astype(np.uint8)
+                image = Image.fromarray(image)
+                image.save(os.path.join(out_dir, f'image_{i+1}_{args.rank}.png'))
                 
-                masks = masks.squeeze().cpu().numpy()
-                masks = (masks * 255).astype(np.uint8)
-                gt_image = Image.fromarray(masks)
+                masks_gt = masks.squeeze().cpu().numpy()
+                masks_gt = (masks_gt * 255).astype(np.uint8)
+                gt_image = Image.fromarray(masks_gt)
                 gt_image.save(os.path.join(out_dir, f'gt_{i+1}_{args.rank}.png'))
                 
                 masks_pred = masks_pred.squeeze().cpu().numpy()
@@ -354,9 +362,9 @@ def test_predict(model, dataloader, args, device):
                 masks_dti = masks_dti.squeeze().cpu().numpy()
                 masks_dti = (masks_dti * 255).astype(np.uint8)
                 dti_image = Image.fromarray(masks_dti)
-                dti_image.save(os.path.join(out_dir, f'dti_{i+1}.png'))
+                dti_image.save(os.path.join(out_dir, f'dti_{i+1}_{args.rank}.png'))
 
-    
+
     dist.all_reduce(total_samples, op=dist.ReduceOp.SUM)
     dist.all_reduce(total_tp, op=dist.ReduceOp.SUM)
     dist.all_reduce(total_tn, op=dist.ReduceOp.SUM)
@@ -377,8 +385,6 @@ def test_predict(model, dataloader, args, device):
     vca = total_vca / total_samples
 
     ave_time = total_time / total_samples
-    # print(ave_time.item())
-
     print("vca", vca)
 
     return acc.item(), sen.item(), spe.item(), iou.item(), miou.item(), dice.item(), cl_dice.item()
@@ -410,33 +416,6 @@ def test(args):
         print(f'CL Dice: {cl_dice}')
     
     return acc, sen, spe, iou, miou, dice, cl_dice
-
-import matplotlib.pyplot as plt
-def save_masked_output_with_imsave(output_tensor, mask_tensor, filepath, normalize=True, cmap="viridis", vmin=0, vmax=1):
-    """
-    真値マスクで指定された部分だけをカラーマップで可視化して保存する関数（plt.imsaveを使用）。
-    
-    Args:
-        output_tensor (torch.Tensor): 可視化したい出力テンソル（shape: [1, 1, H, W]）。
-        mask_tensor (torch.Tensor): 01バイナリの真値マスクテンソル [1, 1, H, W]。
-        filepath (str): 保存するファイルパス。
-        normalize (bool): 出力テンソルを [0, 1] に正規化するかどうか。
-        cmap (str): 使用するカラーマップ（デフォルトは 'viridis'）。
-    """
-    # 出力テンソルとマスクテンソルを NumPy 配列に変換（[H, W] に変換）
-    output_numpy = output_tensor[0, 0].cpu().detach().numpy()
-    mask_numpy = mask_tensor[0, 0].cpu().detach().numpy()
-
-    # マスクを適用して出力テンソルをフィルタリング
-    masked_output = np.where(mask_numpy > 0.5, output_numpy, np.nan)
-
-    # `np.nan` をカラーマップの白色に置き換え
-    masked_output = np.ma.masked_invalid(masked_output)  # NaNをマスク
-    cmap_instance = plt.cm.get_cmap(cmap)  # カラーマップを取得
-    cmap_instance.set_bad(color='white')  # マスクされた部分を白色に設定
-
-    # `plt.imsave` を使用して保存
-    plt.imsave(filepath, masked_output, cmap=cmap_instance, vmin=vmin, vmax=vmax)
 
 
 def main():

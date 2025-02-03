@@ -14,11 +14,10 @@ export CUDA_VISIBLE_DEVICES=0,1,2,3
 NUM_GPUS=$(echo $CUDA_VISIBLE_DEVICES | awk -F',' '{print NF}')
 
 # モデル名
-MODEL_NAME="fr_unet"
-
+MODEL_NAME="unet"
 # トレーニング用引数の指定
 MAX_EPOCH=40
-BATCH_SIZE=64
+BATCH_SIZE=4
 RESOLUTION=584
 LEARNING_RATE=1e-4
 ETA_MIN=0
@@ -35,12 +34,10 @@ DATASET="drive"
 TRANSFORM="fr_unet"
 DATASET_PATH="/home/sano/dataset/DRIVE"
 DATASET_OPT="128_RV-GAN"
-PRETRAINED_PATH="/home/sano/documents/exp_fr_unet/models/checkpoint-epoch40.pth"
-
-NUM_ITERATIONS=100
-GAMMA=0.1
+PRETRAINED_PATH="/home/sano/documents/fr_unet_improved_increase/models/checkpoint-epoch40.pth"
 
 ALPHA=0.5
+EXP_NAME="dice_cldice_alpha0.5"
 
 # PyTorch DDPでトレーニングを実行
 torchrun --nproc_per_node=$NUM_GPUS --nnodes=1 --node_rank=0 --master_port=$MASTER_PORT main.py \
@@ -64,6 +61,4 @@ torchrun --nproc_per_node=$NUM_GPUS --nnodes=1 --node_rank=0 --master_port=$MAST
     --dataset_opt $DATASET_OPT \
     --save_mask \
     --pretrained_path $PRETRAINED_PATH \
-    --num_iterations $NUM_ITERATIONS \
-    --gamma $GAMMA \
     --alpha $ALPHA

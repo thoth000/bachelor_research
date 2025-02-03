@@ -13,6 +13,7 @@ import dataloader.drive_loader as drive
 from tqdm import tqdm
 import cv2
 
+import time
 
 def setup(rank, world_size):
     """DDPの初期設定"""
@@ -46,7 +47,7 @@ def check_args(mode='test'):
     parser.add_argument('--fuse', type=bool, default=True)
     parser.add_argument('--out_ave', type=bool, default=True)
     
-    parser.add_argument('--num_iterations', type=int, default=10)
+    parser.add_argument('--num_iterations', type=int, default=100)
     parser.add_argument('--gamma', type=float, default=0.1)
     
     parser.add_argument('--dataset_path', type=str, default="/home/sano/dataset/DRIVE")
@@ -213,6 +214,35 @@ def anisotropic_diffusion(preds, diffusion_tensor, num_iterations=10, gamma=0.1)
     return preds
 
 
+def dti(preds, thresh_low=0.3, thresh_high=0.5, max_iter=1000):
+    fixed_mask = (preds > thresh_high).float()
+    checkable_mask = (preds >= thresh_low).float()
+    new_fixed_mask = torch.zeros_like(fixed_mask)
+    count = 0
+    while not torch.equal(new_fixed_mask, fixed_mask):
+        count += 1
+        new_fixed_mask = fixed_mask.clone()
+        fixed_mask = F.max_pool2d(fixed_mask, 3, 1, 1) * checkable_mask
+    
+    return fixed_mask
+
+
+import scipy.ndimage as ndi
+
+def count_connected_components(mask):
+    """
+    バイナリマスクの連結成分数を計算。
+    
+    Args:
+        mask (torch.Tensor): バイナリマスク (B, 1, H, W)。
+    
+    Returns:
+        int: 連結成分数。
+    """
+    mask_np = mask.squeeze().cpu().numpy().astype(np.uint8)  # NumPy 配列に変換
+    labeled_array, num_features = ndi.label(mask_np, structure=np.ones((3, 3)))  # 8方向連結成分数を計算
+    return num_features
+
 def test_predict(model, dataloader, args, device):
     model.eval()
     out_dir = 'result/predict'
@@ -226,21 +256,40 @@ def test_predict(model, dataloader, args, device):
     
     total_dice = torch.tensor(0.0, device=device)
     total_cl_dice = torch.tensor(0.0, device=device)
+    total_vca = torch.tensor(0.0, device=device)
+    
+    total_model_time = torch.tensor(0.0, device=device)
+    total_diffusion_time = torch.tensor(0.0, device=device)
     
     with torch.no_grad():
         for i, sample in tqdm(enumerate(dataloader), total=len(dataloader)):
             images = sample['transformed_image'].to(device)
             masks = sample['mask'].to(device)
+            # print(images.shape, masks.shape)
             original_size = masks.shape[2:]
+            
+            model_start = time.time()
             main_out, vec = model(images)
+            model_time = time.time() - model_start
+            
             vec = F.normalize(vec, p=2, dim=1)
             main_out_resized = F.interpolate(main_out, size=original_size, mode='bilinear', align_corners=False)
             preds = torch.sigmoid(main_out_resized) # [B, 1, H, W]
             masks_pred = (preds > args.threshold).float()
-            preds_anisotropic = anisotropic_diffusion(preds, create_anisotropic_tensor_from_vector(vec), num_iterations=args.num_iterations, gamma=args.gamma)
+            
+            diffusion_start = time.time()
+            preds_anisotropic = anisotropic_diffusion(preds.clone(), create_anisotropic_tensor_from_vector(vec), num_iterations=args.num_iterations, gamma=args.gamma)
+            diffusion_time = time.time() - diffusion_start
+            
             masks_anisotropic = (preds_anisotropic > args.threshold).float()
             
+            masks_dti = dti(preds, thresh_low=0.3, thresh_high=0.5)
+            
             masks_eval = masks_anisotropic
+            
+            masks_dti_anisotropic = dti(preds_anisotropic, thresh_low=0.3, thresh_high=0.5)
+            
+            masks_eval = masks_dti_anisotropic
             
             soft_skeleton_pred = soft_skeleton(masks_eval)
             soft_skeleton_gt = soft_skeleton(masks)
@@ -262,15 +311,28 @@ def test_predict(model, dataloader, args, device):
             tsens = (torch.sum(soft_skeleton_gt * masks_eval) + 1) / (torch.sum(soft_skeleton_gt) + 1)
             cl_dice = (2 * tprec * tsens) / (tprec + tsens)
             total_cl_dice += cl_dice
+            # VCA
+            num_components_gt = count_connected_components(masks)
+            num_components_pred = count_connected_components(masks_eval)
+            # print(num_components_gt, num_components_pred)
+            vca = num_components_pred / num_components_gt if num_components_gt > 0 else 0
+            total_vca += vca
+            # time
+            total_model_time += model_time
+            total_diffusion_time += diffusion_time
             
             total_samples += images.size(0)
             
             if args.rank == 0:
+                # masked directions
+                save_masked_output_with_imsave(torch.abs(vec[:, 0:1]), masks, os.path.join(out_dir, f"masked_vec_x_{i+1}_{args.rank}.png"))
+                save_masked_output_with_imsave(torch.abs(vec[:, 1:2]), masks, os.path.join(out_dir, f"masked_vec_y_{i+1}_{args.rank}.png"))
+                
                 masks_pred = masks_pred.squeeze().cpu().numpy()
                 masks_pred = (masks_pred * 255).astype(np.uint8)
             
                 pred_image = Image.fromarray(masks_pred)
-                pred_image.save(os.path.join(out_dir, f'{i+1}.png'))
+                pred_image.save(os.path.join(out_dir, f'pred_{i+1}.png'))
                 
                 masks_anisotropic = masks_anisotropic.squeeze().cpu().numpy()
                 masks_anisotropic = (masks_anisotropic * 255).astype(np.uint8)
@@ -278,8 +340,14 @@ def test_predict(model, dataloader, args, device):
                 connected_image = Image.fromarray(masks_anisotropic)
                 connected_image.save(os.path.join(out_dir, f'anisotropic_{i+1}.png'))
                 
-                save_main_out_image(preds, os.path.join(out_dir, f'pred_{i+1}.png'))
-                save_main_out_image(preds_anisotropic, os.path.join(out_dir, f'pred_anisotropic_{i+1}.png'))
+                dti_image = Image.fromarray((masks_dti.squeeze().cpu().numpy() * 255).astype(np.uint8))
+                dti_image.save(os.path.join(out_dir, f'dti_{i+1}.png'))
+                
+                dti_anisotropic_image = Image.fromarray((masks_dti_anisotropic.squeeze().cpu().numpy() * 255).astype(np.uint8))
+                dti_anisotropic_image.save(os.path.join(out_dir, f'dti_anisotropic_{i+1}.png'))
+                
+                save_main_out_image(preds, os.path.join(out_dir, f'pred_field_{i+1}.png'))
+                save_main_out_image(preds_anisotropic, os.path.join(out_dir, f'anisotropic_filed_{i+1}.png'))
             
                 
     
@@ -290,6 +358,9 @@ def test_predict(model, dataloader, args, device):
     dist.all_reduce(total_fn, op=dist.ReduceOp.SUM)
     dist.all_reduce(total_dice, op=dist.ReduceOp.SUM)
     dist.all_reduce(total_cl_dice, op=dist.ReduceOp.SUM)
+    dist.all_reduce(total_vca, op=dist.ReduceOp.SUM)
+    dist.all_reduce(total_model_time, op=dist.ReduceOp.SUM)
+    dist.all_reduce(total_diffusion_time, op=dist.ReduceOp.SUM)
     
     acc = (total_tp + total_tn) / (total_tp + total_tn + total_fp + total_fn)
     sen = total_tp / (total_tp + total_fn) if (total_tp + total_fn) > 0 else torch.tensor(0.0, device=device)
@@ -298,6 +369,12 @@ def test_predict(model, dataloader, args, device):
     miou = ((total_tp / (total_tp + total_fp + total_fn)) + (total_tn / (total_tn + total_fp + total_fn))) / 2
     dice = total_dice / total_samples
     cl_dice = total_cl_dice / total_samples
+    vca = total_vca / total_samples
+    
+    print("vca", vca)
+    
+    print("model_time", total_model_time / total_samples)
+    print("diffusion_time", total_diffusion_time / total_samples)
 
     return acc.item(), sen.item(), spe.item(), iou.item(), miou.item(), dice.item(), cl_dice.item()
 
@@ -345,6 +422,34 @@ def save_main_out_image(output_tensor, filepath, cmap="viridis"):
     plt.colorbar()
     plt.savefig(filepath)  # ファイルパスに画像を保存
     plt.close()  # メモリを解放するためにプロットを閉じる
+
+
+import matplotlib.pyplot as plt
+def save_masked_output_with_imsave(output_tensor, mask_tensor, filepath, normalize=True, cmap="viridis", vmin=0, vmax=1):
+    """
+    真値マスクで指定された部分だけをカラーマップで可視化して保存する関数（plt.imsaveを使用）。
+    
+    Args:
+        output_tensor (torch.Tensor): 可視化したい出力テンソル（shape: [1, 1, H, W]）。
+        mask_tensor (torch.Tensor): 01バイナリの真値マスクテンソル [1, 1, H, W]。
+        filepath (str): 保存するファイルパス。
+        normalize (bool): 出力テンソルを [0, 1] に正規化するかどうか。
+        cmap (str): 使用するカラーマップ（デフォルトは 'viridis'）。
+    """
+    # 出力テンソルとマスクテンソルを NumPy 配列に変換（[H, W] に変換）
+    output_numpy = output_tensor[0, 0].cpu().detach().numpy()
+    mask_numpy = mask_tensor[0, 0].cpu().detach().numpy()
+
+    # マスクを適用して出力テンソルをフィルタリング
+    masked_output = np.where(mask_numpy > 0.5, output_numpy, np.nan)
+
+    # `np.nan` をカラーマップの白色に置き換え
+    masked_output = np.ma.masked_invalid(masked_output)  # NaNをマスク
+    cmap_instance = plt.cm.get_cmap(cmap)  # カラーマップを取得
+    cmap_instance.set_bad(color='white')  # マスクされた部分を白色に設定
+
+    # `plt.imsave` を使用して保存
+    plt.imsave(filepath, masked_output, cmap=cmap_instance, vmin=vmin, vmax=vmax)
 
 
 def main():

@@ -245,6 +245,24 @@ def dti_normal(preds, thresh_low=0.3, thresh_high=0.5, max_iter=1000):
     
     return gbin
 
+
+import scipy.ndimage as ndi
+
+def count_connected_components(mask):
+    """
+    バイナリマスクの連結成分数を計算。
+    
+    Args:
+        mask (torch.Tensor): バイナリマスク (B, 1, H, W)。
+    
+    Returns:
+        int: 連結成分数。
+    """
+    mask_np = mask.squeeze().cpu().numpy().astype(np.uint8)  # NumPy 配列に変換
+    labeled_array, num_features = ndi.label(mask_np, structure=np.ones((3, 3)))  # 8方向連結成分数を計算
+    return num_features
+
+
 def test_predict(model, dataloader, args, device):
     model.eval()
     out_dir = 'result/predict'
@@ -258,6 +276,7 @@ def test_predict(model, dataloader, args, device):
     
     total_dice = torch.tensor(0.0, device=device)
     total_cl_dice = torch.tensor(0.0, device=device)
+    total_vca = torch.tensor(0.0, device=device)
     
     total_time = torch.tensor(0.0, device=device)
     
@@ -279,6 +298,7 @@ def test_predict(model, dataloader, args, device):
             
             masks_dti = dti(preds, thresh_low=0.3, thresh_high=0.5)
             
+            # masks_eval = masks_anisotropic
             masks_eval = masks_anisotropic
             
             masks_eval = drive.unpad_to_original_by_size(masks_eval)
@@ -306,10 +326,21 @@ def test_predict(model, dataloader, args, device):
             tsens = (torch.sum(soft_skeleton_gt * masks_eval) + 1) / (torch.sum(soft_skeleton_gt) + 1)
             cl_dice = (2 * tprec * tsens) / (tprec + tsens)
             total_cl_dice += cl_dice
+            # VCA
+            num_components_gt = count_connected_components(masks)
+            num_components_pred = count_connected_components(masks_eval)
+            # print(num_components_gt, num_components_pred)
+            vca = num_components_pred / num_components_gt if num_components_gt > 0 else 0
+            total_vca += vca
             
             total_samples += images.size(0)
             
             if True:
+                image = images.squeeze().cpu().numpy()
+                image = (image * 255).astype(np.uint8)
+                image = Image.fromarray(image)
+                image.save(os.path.join(out_dir, f'image_{i+1}_{args.rank}.png'))
+                
                 masks_gt = masks.squeeze().cpu().numpy()
                 masks_gt = (masks_gt * 255).astype(np.uint8)
                 gt_image = Image.fromarray(masks_gt)
@@ -341,6 +372,7 @@ def test_predict(model, dataloader, args, device):
     dist.all_reduce(total_fn, op=dist.ReduceOp.SUM)
     dist.all_reduce(total_dice, op=dist.ReduceOp.SUM)
     dist.all_reduce(total_cl_dice, op=dist.ReduceOp.SUM)
+    dist.all_reduce(total_vca, op=dist.ReduceOp.SUM)
     dist.all_reduce(total_time, op=dist.ReduceOp.SUM)
     
     acc = (total_tp + total_tn) / (total_tp + total_tn + total_fp + total_fn)
@@ -350,9 +382,10 @@ def test_predict(model, dataloader, args, device):
     miou = ((total_tp / (total_tp + total_fp + total_fn)) + (total_tn / (total_tn + total_fp + total_fn))) / 2
     dice = total_dice / total_samples
     cl_dice = total_cl_dice / total_samples
+    vca = total_vca / total_samples
 
     ave_time = total_time / total_samples
-    print(ave_time.item())
+    print("vca", vca)
 
     return acc.item(), sen.item(), spe.item(), iou.item(), miou.item(), dice.item(), cl_dice.item()
 

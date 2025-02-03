@@ -1,13 +1,13 @@
 #!/bin/bash
 
 # エラー回避
-export NO_ALBUMENTATIONS_UPDATE=1
+export NO_ALBUMENTATIONS_UPDATE=0,1,2,3
 
 # マスターポートの設定
 MASTER_PORT=$((50000 + RANDOM % 1000))  # 50000〜50999の範囲でランダムなポート番号
 
 # 使用するGPUを指定する（例：4 GPU）
-export CUDA_VISIBLE_DEVICES=0,1,2,3
+export CUDA_VISIBLE_DEVICES=2
 NUM_GPUS=$(echo $CUDA_VISIBLE_DEVICES | awk -F',' '{print NF}')
 
 # トレーニングと共通するパラメータ
@@ -16,8 +16,8 @@ RESOLUTION=584
 THRESHOLD=0.5
 RESULT_DIR="result"
 DATASET_PATH="/home/sano/dataset/DRIVE"
-DATASET_OPT="pad"
-PRETRAINED_PATH="/home/sano/documents/exp_fr_unet_anisotropic/exp/exp_20250110_175159/final_model.pth"
+DATASET_OPT="128_RV-GAN"
+PRETRAINED_PATH="/home/sano/documents/exp_fr_unet_increase/exp/iter100_alpha0.5/final_model.pth"
 
 # 実行時間のタイムスタンプを取得
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")

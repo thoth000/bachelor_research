@@ -34,11 +34,10 @@ DATASET="drive"
 TRANSFORM="fr_unet"
 DATASET_PATH="/home/sano/dataset/DRIVE"
 DATASET_OPT="512"
-PRETRAINED_PATH="/home/sano/documents/add_unet_increase/models/improved_unet.pth"
+PRETRAINED_PATH="/home/sano/documents/exp_unet_improved_increase/models/improved_unet.pth"
 
-ALPHA=0.0
-
-EXP_NAME="kernel9_alpha${ALPHA}"
+ALPHA=1.0
+EXP_NAME="alpha_1.0"
 
 # PyTorch DDPでトレーニングを実行
 torchrun --nproc_per_node=$NUM_GPUS --nnodes=1 --node_rank=0 --master_port=$MASTER_PORT main.py \

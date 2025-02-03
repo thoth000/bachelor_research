@@ -178,16 +178,21 @@ def test_predict(model, dataloader, args, device):
             
             total_samples += images.size(0)
             
-            if args.rank==0 and i == 0:
+            if True:
+                masks = masks.squeeze().cpu().numpy()
+                masks = (masks * 255).astype(np.uint8)
+                gt_image = Image.fromarray(masks)
+                gt_image.save(os.path.join(out_dir, f'gt_{i+1}_{args.rank}.png'))
+                
                 masks_pred = masks_pred.squeeze().cpu().numpy()
                 masks_pred = (masks_pred * 255).astype(np.uint8)
                 pred_image = Image.fromarray(masks_pred)
-                pred_image.save(os.path.join(out_dir, f'{i+1}.png'))
+                pred_image.save(os.path.join(out_dir, f'pred_{i+1}_{args.rank}.png'))
                 
                 masks_dti = masks_dti.squeeze().cpu().numpy()
                 masks_dti = (masks_dti * 255).astype(np.uint8)
                 dti_image = Image.fromarray(masks_dti)
-                dti_image.save(os.path.join(out_dir, f'dti_{i+1}.png'))
+                dti_image.save(os.path.join(out_dir, f'dti_{i+1}_{args.rank}.png'))
 
     
     dist.all_reduce(total_samples, op=dist.ReduceOp.SUM)

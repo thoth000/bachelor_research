@@ -93,8 +93,8 @@ class Loss(torch.nn.Module):
         soft_skeleton_gt = soft_skeleton_gt.view(batch_size, -1)
 
         # soft dice loss (バッチ次元ごとに計算)
-        dice_loss = 1 - (2 * torch.sum(masks_gt * preds, dim=1) + 1) / \
-                    (torch.sum(masks_gt, dim=1) + torch.sum(preds, dim=1) + 1)
+        soft_dice_loss = 1 - (2 * torch.sum(masks_gt * preds, dim=1) + 1) / \
+                    (torch.sum(masks_gt**2, dim=1) + torch.sum(preds**2, dim=1) + 1)
                     
         bce_loss = F.binary_cross_entropy_with_logits(preds, masks_gt, reduction='none')
 
@@ -106,7 +106,7 @@ class Loss(torch.nn.Module):
         cl_dice_loss = 1 - (2 * tprec * tsens) / (tprec + tsens)
 
         # バッチ次元ごとに損失を組み合わせ
-        loss = (1 - alpha) * dice_loss + alpha * cl_dice_loss
+        loss = (1 - alpha) * soft_dice_loss + alpha * cl_dice_loss
 
         # バッチ全体の損失を平均化
-        return bce_loss.mean()
+        return loss.mean()

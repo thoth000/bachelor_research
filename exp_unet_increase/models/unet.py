@@ -74,7 +74,7 @@ class UNet(nn.Module):
         self.up4 = Up(128, 64)
         self.out_conv = nn.Conv2d(64, n_classes, kernel_size=1)
 
-        self.direction = nn.Conv2d(64, 2, kernel_size=11, padding=5)
+        self.direction = nn.Conv2d(64, 2, kernel_size=1, padding=0)
 
     def forward(self, x):
         with torch.no_grad():
