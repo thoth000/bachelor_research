@@ -6,3 +6,8 @@ result/
 
 # pycacheファイルを無視
 __pycache__/
+
+*.png
+
+bar.py
+convert.py
