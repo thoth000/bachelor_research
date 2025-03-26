@@ -14,3 +14,5 @@ convert.py
 
 # delse系のディレクトリを無視
 archive/delse_*/
+
+mask2former_token
