@@ -11,3 +11,7 @@ __pycache__/
 
 bar.py
 convert.py
+
+# delse系のディレクトリを無視
+archive/delse_old
+archive/delse_psp
